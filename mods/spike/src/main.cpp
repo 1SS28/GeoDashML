@@ -44,7 +44,7 @@ class $modify(StepGameLayer, GJBaseGameLayer) {
 };
 
 class $modify(StepKeys, CCKeyboardDispatcher) {
-    bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat) {
+    bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat, double timestamp) {
         if (down && !repeat) {
             if (key == enumKeyCodes::KEY_P) {
                 g_paused = !g_paused;
@@ -57,6 +57,6 @@ class $modify(StepKeys, CCKeyboardDispatcher) {
                 return true;
             }
         }
-        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat);
+        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat, timestamp);
     }
 };
