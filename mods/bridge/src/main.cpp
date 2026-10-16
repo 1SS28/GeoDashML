@@ -15,6 +15,7 @@
 
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CCDisplayLinkDirector.hpp>
+#include <Geode/modify/FMODAudioEngine.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <matjson.hpp>
@@ -40,7 +41,7 @@ namespace {
 
 constexpr int         kPort          = 41414;
 constexpr float       kTickDt        = 1.0f / 240.0f;
-constexpr char const* kBridgeVersion = "0.1.0";
+constexpr char const* kBridgeVersion = "0.1.1";
 constexpr char const* kGdVersion     = "2.2081";
 constexpr int         kMaxTicks      = 2'000'000;
 
@@ -431,6 +432,16 @@ class $modify(BridgePlayLayer, PlayLayer) {
     void prepareMusic(bool dontWait) {
         if (g.attached()) return;
         PlayLayer::prepareMusic(dontWait);
+    }
+};
+
+// Entering practice mode plays the practice song through FMODAudioEngine::playMusic, which goes
+// loadMusic -> preloadMusic -> the same Sound::getOpenState spin, and livelocked the game in
+// Phase 2 (see the notebook, 2026-10-16). No music of any kind while attached.
+class $modify(BridgeAudio, FMODAudioEngine) {
+    void playMusic(gd::string path, bool shouldLoop, float fadeInTime, int channel) {
+        if (g.attached()) return;
+        FMODAudioEngine::playMusic(path, shouldLoop, fadeInTime, channel);
     }
 };
 
