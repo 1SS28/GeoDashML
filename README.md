@@ -14,7 +14,7 @@ Status: Phase 1 spike. Getting a Geode mod to pause the physics loop and step it
 
 | Component | Version |
 |---|---|
-| Geometry Dash (Steam, macOS) | 2.209 |
+| Geometry Dash (Steam, macOS) | 2.2081 (downgraded from 2.209; manifest 8780295549609362522) |
 | Geode loader | 5.11.2 |
 | Geode CLI | 3.9.0 |
 | macOS | 26.6.2, Apple Silicon |
