@@ -111,7 +111,7 @@ class GDEnvConfig:
         return dataclasses.asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "GDEnvConfig":
+    def from_dict(cls, d: dict) -> GDEnvConfig:
         return cls(**d)
 
     def save(self, path: str | Path) -> Path:
@@ -121,5 +121,5 @@ class GDEnvConfig:
         return path
 
     @classmethod
-    def load(cls, path: str | Path) -> "GDEnvConfig":
+    def load(cls, path: str | Path) -> GDEnvConfig:
         return cls.from_dict(json.loads(Path(path).read_text()))

@@ -46,7 +46,7 @@ class ObjectTable:
         return len(self.left)
 
     @classmethod
-    def from_geometry(cls, geometry: dict) -> "ObjectTable":
+    def from_geometry(cls, geometry: dict) -> ObjectTable:
         """Builds the table from the dict returned by GDBridge.geometry(). Drops decoration and roleless objects."""
         objs = geometry["objects"]
         rects, roles = [], []
