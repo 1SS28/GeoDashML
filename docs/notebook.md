@@ -2,6 +2,36 @@
 
 Newest entry at the top. Record surprises the same day.
 
+## 2026-10-16 (later still): Phase 2 environment
+
+- Wrote `gdenv/`: `GDEnv(gymnasium.Env)`, config dataclass, object table, action delay ring buffer, per-episode CSV. Design choice: one bridge `run` per decision with the due inputs at their exact tick offsets, so an action delay that is not a multiple of `frame_skip` (6 with frame skip 4) stays exact and costs no extra round trip; the per-tick trace from the same reply gives the ticks alive for the reward. The object table is sorted by hitbox left edge and sliced with `searchsorted`, 1.5 µs per call; a brute-force scan agrees on 400 random positions offline and on every step of the live tests.
+- **Surprise 4: toggling practice mode livelocked the game.** Same signature as Surprise 3: main thread at 100% in `FMOD::Sound::getOpenState` holding FMOD's critical section, FMOD's thread blocked on it. Mapping the sampled offsets against the 2.2081 bindings (`mods/bridge/build/_deps/bindings-src/bindings/2.2081/GeometryDash.bro`, `m1` column): `PlayLayer::togglePracticeMode` → `FMODAudioEngine::playMusic` → `loadMusic` → `preloadMusic`. Practice mode plays its own song, and the Phase 1 fix only covered `PlayLayer::startMusic`/`prepareMusic`. It is intermittent: the first test run through the same path passed. Fix: bridge 0.1.1 makes `FMODAudioEngine::playMusic` a no-op while attached. 60 cycles of practice on / checkpoint / respawn / practice off then ran in 0.35 s.
+- **Surprise 5: presses during the first three ticks after a reset are swallowed, and a held button never re-triggers.** Hold from tick 0, 1 or 2 after `resetLevelFromStart`: the cube never jumps, for 400 ticks, and dies at the first spike. Hold from tick 3 (or any later tick): jumps immediately and keeps re-jumping on landing, every 103 to 105 ticks (jump starts at 3, 106, 211, 316). After a practice checkpoint respawn only tick 0 is swallowed; presses at ticks 1 and 2 register. In both cases the first two ticks do not move the cube. Consequence for RL: an agent that chooses hold at its first decision and keeps holding is stuck forever. The env now runs 3 warm-up ticks (button released) after every reset before the first decision (`reset_warmup_ticks`, default 3, 0 restores the raw behaviour); the reset observation then shows the cube on the ground at x 1.298.
+- `on_ground` is false in the state right after a reset (tick 0, no physics tick has run) and true from tick 3.
+- **Surprise 6: Stereo Madness has a spike at x 0.** Object id 8, type Hazard, rect −3..3 × 99..111, sitting on the spawn point, and it does not kill the spawning cube. It is a real object in the level data, so it is in the observation at reset as a hazard at relative x 0. Harmless, but a reader of the first observation will wonder.
+- The first real spike (rect x 522..528) kills the cube at x 507.62 on tick 392, where the cube's right edge (x + 15) first exceeds 522. So the exported `getObjectRect` and a 30-wide cube hitbox agree with the game's collision to within a tick, at least for this spike. The Phase 1 determinism run that died at x 508.9 died on the same spike. A single 4-tick tap clears it if pressed between ticks 328 and 382 (a 54-tick, 0.23 s window); a tap at 356 peaks at y 168.8 and lands at x 592.
+- Checkpoint respawn (`resetLevel` in practice mode) restores x, y and yvel exactly to the values at `markCheckpoint`, and increments the attempt counter. `resetLevelFromStart` in practice mode keeps the checkpoint. Leaving practice mode drops it.
+- Object density: 2,399 objects in Stereo Madness, 975 decoration, 4 without a role (3 secret coins, 1 Decoration-typed solid), 1,420 kept: 786 solid, 611 hazard, 19 modifier, 4 portals. A 600-unit window holds up to 124 of them (around x 25,700, the end section). Worst-case effective lookahead by slot count, i.e. how far ahead the agent is guaranteed to see:
+
+  | `max_objects` | 24 | 32 | 40 | 48 | 64 | 80 | 96 | 128 |
+  |---|---|---|---|---|---|---|---|---|
+  | worst effective lookahead (units) | 70 | 102 | 132 | 190 | 270 | 342 | 450 | 600 |
+
+  Chose 64 as the default (975-dimensional observation, at least 0.87 s of lookahead). The 19 "modifier" objects are invisible triggers (type 20, 30×30 at x 135 and so on) that `gdbridge/objects.py` maps to a role; they are in the observation. Drop them in Phase 3 if they turn out to confuse the agent.
+- Gymnasium's `check_env` passes. It requires `info` to be identical across identical runs, so the game's attempt counter stays out of `info` (it is in `env.last_state` and the CSV). It warns about the infinite Box bounds; left as is.
+- A Bernoulli(0.5) random agent reaches at most 3.8%: every episode ends at the spike at 525 (tick 408 to 416, 2.0%) or at the pair at 975/1005 (about tick 760, 3.7%).
+- Throughput of the env (`scripts/soak_random.py`, Stereo Madness, frame skip 4, Bernoulli(0.5) agent, Apple Silicon):
+
+  | run | episodes/s | decisions/s | ticks/s |
+  |---|---|---|---|
+  | 200 episodes, render on | 41.7 | 5,847 | 23,387 |
+  | 200 episodes, render off | 110.9 | 15,535 | 62,139 |
+  | 10,000 episodes, render on (the soak) | 36.4 | 5,222 | 20,888 |
+
+  With rendering off the env matches the Phase 1 bench for `step n=4` (14.4k decisions/s there, 15.5k here including the observation and the trace), so Python adds nothing measurable; the round trip is still the cost. The soak took 274.8 s and dipped to about 30 episodes/s for a few thousand episodes while other work ran on the machine. Episodes are short because the agent is bad: median 416 ticks.
+- **Soak result: 10,000 episodes, no crash, no hang, 10,000 deaths, CSV loads with pandas (10,000 rows, attempt counter monotonic).** 5,265 episodes died at the first spike (about 2.0%), 4,711 at the pair at 975/1005 (about 3.7%), 24 got past that, and one reached 8.86% (tick 1,824). No step needed more than 64 object slots in the first 9% of the level. The run lives in `runs/soak_random_10k/` (gitignored).
+- Not done: level completion has never been observed, so the `completed` handling (bonus, terminal) is untested until the search bot clears a level in Phase 3. User levels need a bridge `load_level` command. Hitbox correctness beyond the first spike is untested.
+
 ## 2026-10-16 (later): Phase 1 bridge
 
 - Wrote `mods/bridge`: a loopback TCP server inside the mod, newline-delimited JSON, serviced from the game's main thread with no extra threads. Protocol in `docs/bridge-protocol.md`. Python client in `gdbridge/`, managed with uv.

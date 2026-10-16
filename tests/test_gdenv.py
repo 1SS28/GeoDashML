@@ -9,7 +9,6 @@ from gymnasium.utils.env_checker import check_env
 
 from gdbridge.objects import role_of
 from gdenv import GDEnv, GDEnvConfig, StartCheckpoint, decode, obs_size
-from gdenv.observation import N_PLAYER
 
 RELEASE, HOLD = 0, 1
 
@@ -124,7 +123,7 @@ def test_reward_is_ticks_alive_minus_death_penalty(make_env):
 def test_truncation_at_max_episode_ticks(make_env):
     env = make_env(max_episode_ticks=40, frame_skip=4)
     env.reset()
-    for k in range(9):
+    for _ in range(9):
         _, _, term, trunc, _ = env.step(RELEASE)
         assert not term and not trunc
     _, _, term, trunc, info = env.step(RELEASE)
@@ -140,7 +139,7 @@ def test_same_actions_give_identical_trajectories(make_env):
     runs = [run_episode(env, lambda k: actions[k]) for _ in range(3)]
     for observations, rewards, infos in runs[1:]:
         assert len(observations) == len(runs[0][0])
-        assert all(np.array_equal(a, b) for a, b in zip(observations, runs[0][0]))
+        assert all(np.array_equal(a, b) for a, b in zip(observations, runs[0][0], strict=True))
         assert rewards == runs[0][1]
         assert ticks_trace(infos) == ticks_trace(runs[0][2])
 
@@ -160,7 +159,10 @@ def test_terminal_hold_state_does_not_leak_into_next_episode(make_env):
 def test_action_delay_is_exactly_n_ticks(make_env, bridge, delay):
     fs, press, release, steps = 4, 5, 8, 20  # press at decision 5 (tick 20), release at decision 8 (tick 32)
     env = make_env(frame_skip=fs, action_delay_ticks=delay)
-    policy = lambda k: HOLD if press <= k < release else RELEASE
+
+    def policy(k):
+        return HOLD if press <= k < release else RELEASE
+
     _, _, infos = run_episode(env, policy, max_steps=steps)
     env_trace = ticks_trace(infos)
     assert len(env_trace) == steps * fs
@@ -206,12 +208,12 @@ def test_observation_objects_are_the_ones_ahead(make_env, max_objects):
     observations, _, infos = run_episode(env, lambda k: HOLD if k % 7 < 3 else RELEASE, max_steps=400)
     assert len(observations) > 20
     checked = 0
-    for obs, info in zip(observations, infos):
+    for obs, info in zip(observations, infos, strict=True):
         px, py = info["x"], info["y"]
         expected = brute_force_ahead(env.geometry, px, la)[:max_objects]
         got = decode(obs, max_objects)["objects"]
         assert len(got) == len(expected), (px, len(got), len(expected))
-        for g, (left, cy, cx, w, h, role) in zip(got, expected):
+        for g, (left, cy, cx, w, h, role) in zip(got, expected, strict=True):
             assert np.isclose(g["rel_x"], (cx - px) / la, atol=1e-5)
             assert np.isclose(g["rel_y"], (cy - py) / 300.0, atol=1e-5)
             assert np.isclose(g["width"], w / 30.0, atol=1e-5)
@@ -232,7 +234,7 @@ def test_first_spike_leaves_the_observation_once_passed(make_env):
     observations, _, infos = run_episode(env, lambda k: HOLD if k == 88 else RELEASE, max_steps=200)
     xs = [info["x"] for info in infos]
     assert max(xs) > 560, "the tap at tick 352 clears the first spike at x=525"
-    for obs, x in zip(observations, xs):
+    for obs, x in zip(observations, xs, strict=True):
         hazard_xs = [o["rel_x"] * 600.0 + x for o in decode(obs, 64)["objects"] if o["role"] == "hazard"]
         if x > 528.1:  # spike rect spans 522..528
             assert all(hx > 526 for hx in hazard_xs), (x, hazard_xs)
@@ -254,7 +256,7 @@ def test_start_checkpoint_respawns_at_the_checkpoint(make_env, bridge):
     first = run_episode(env, lambda k: RELEASE)
     second = run_episode(env, lambda k: RELEASE)
     assert ticks_trace(first[2]) == ticks_trace(second[2])
-    assert all(np.array_equal(a, b) for a, b in zip(first[0], second[0]))
+    assert all(np.array_equal(a, b) for a, b in zip(first[0], second[0], strict=True))
     assert np.isclose(first[2][0]["x"], s.x, atol=0.01)
     # Back to the level start: practice mode goes off and episodes start at x 0 again.
     plain = make_env()

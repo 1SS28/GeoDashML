@@ -7,7 +7,15 @@ import pandas as pd
 import pytest
 
 from gdbridge.objects import ROLES, GameObjectType
-from gdenv import ActionDelayBuffer, GDEnvConfig, ObjectTable, StartCheckpoint, decode, feature_names, obs_size
+from gdenv import (
+    ActionDelayBuffer,
+    GDEnvConfig,
+    ObjectTable,
+    StartCheckpoint,
+    decode,
+    feature_names,
+    obs_size,
+)
 from gdenv.episode_log import FIELDS, EpisodeLogger
 from gdenv.observation import N_OBJECT, N_PLAYER, write_objects
 
@@ -94,7 +102,7 @@ def test_ahead_matches_brute_force_on_random_geometry():
     la = 300.0
     for px in rng.uniform(-200, 5300, 400):
         idx = t.ahead(px, la)
-        got = sorted(zip(t.left[idx], t.cy[idx], t.cx[idx]))
+        got = sorted(zip(t.left[idx], t.cy[idx], t.cx[idx], strict=True))
         exp = sorted((o["rect"][0], o["rect"][1] + o["rect"][3] / 2, o["rect"][0] + o["rect"][2] / 2)
                      for o in objects if o["rect"][0] + o["rect"][2] >= px and o["rect"][0] <= px + la)
         assert got == exp, px
