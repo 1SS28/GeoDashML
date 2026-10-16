@@ -1,0 +1,12 @@
+{
+    "geode": "5.11.2",
+    "gd": {
+        "mac": "2.2081"
+    },
+    "version": "v0.1.0",
+    "id": "sanjey.gdml_bridge",
+    "name": "GDML Bridge",
+    "developer": "sanjey",
+    "description": "Lockstep socket bridge: the game advances one 240 Hz tick at a time under control of a local client. See docs/bridge-protocol.md.",
+    "tags": ["developer"]
+}

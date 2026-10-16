@@ -2,6 +2,26 @@
 
 Newest entry at the top. Record surprises the same day.
 
+## 2026-10-16 (later): Phase 1 bridge
+
+- Wrote `mods/bridge`: a loopback TCP server inside the mod, newline-delimited JSON, serviced from the game's main thread with no extra threads. Protocol in `docs/bridge-protocol.md`. Python client in `gdbridge/`, managed with uv.
+- **Surprise 1: `CCScheduler::update` is not a per-frame hook on macOS.** It fired every frame during the loading screen, then only sporadically at the main menu (fewer than 600 calls in 70 s), even though Geode's own main-thread queue hooks it. Counters on three candidates showed `CCDisplayLinkDirector::mainLoop` and `CCEGLView::swapBuffers` fire every frame (about 120 per second at the menu). Servicing moved to `mainLoop`. Not investigated why the scheduler hook starves; worth a note to the Geode people later.
+- **Surprise 2: a freshly loaded level is not steppable for about 1 s.** `GJBaseGameLayer::m_started` flips after a real-time delay, and physics ticks before that do nothing. The client's `load_main` now waits for `started`. Resets (`resetLevel`, `resetLevelFromStart`) keep `started` true and are steppable immediately, and they increment the attempt counter.
+- **Phase 1 gate passed.** `tests/test_determinism.py`: 1000 runs of 2000 ticks on Stereo Madness with a fixed 16-input schedule, one distinct 64-bit trajectory hash (7276707798765353006), 4.67 s wall time. The cube dies partway through the schedule and stays dead, which also confirms the auto-reset suppression.
+- Throughput (`scripts/bench_throughput.py`, Stereo Madness, Apple Silicon):
+
+  | mode | render on | render off |
+  |---|---|---|
+  | `step n=1`, one round trip per tick | 5,865 ticks/s | 14,510 ticks/s |
+  | `step n=4`, one round trip per decision | 35,022 ticks/s | 57,798 ticks/s |
+  | `run`, 20,000 ticks in one command | 533,898 ticks/s | 535,571 ticks/s |
+
+  The plan's gate was 1,000 ticks/s. At frame skip 4 with rendering on, one million environment steps take about two minutes. The round trip, not the physics, is the cost: the physics alone runs at over half a million ticks per second.
+- Not yet done from the original Phase 1 list: the "set practice checkpoint / reset to checkpoint" commands exist but are untested, and the geometry export has been checked only for shape, not for hitbox correctness against the game's collision. Both belong to Phase 2 when the observation builder needs them.
+- **Surprise 3: resets can livelock on music.** With the test suite hammering resets, the game spun at 99% CPU forever. A `sample` of the process showed `resetLevelFromStart` → `resetLevel` → `startMusic` → `prepareMusic` → `FMODAudioEngine::setMusicTimeMS` polling `Sound::getOpenState` in a tight loop that takes FMOD's critical section on every iteration, while FMOD's own thread sat blocked on that same lock and so never finished opening the stream. Fix: while a client is attached, `PlayLayer::startMusic` and `prepareMusic` are no-ops. The offsets were mapped to names by matching the sampled addresses against the bindings' m1 addresses, which is a trick worth remembering.
+- After a reset the first two ticks do not move the cube; movement starts on tick 3 at 1.29825 per tick. `m_playerSpeed` reads 0.9 at what the game calls 1x speed.
+- Opening the .app directly still fails; launch with `open steam://rungameid/322170`. The main loop runs on the thread Geode labels `Main` when the window is frontmost and `CVDisplayLink` otherwise.
+
 ## 2026-10-16
 
 - Machine: MacBook Pro, Apple Silicon, macOS 26.6.2. The plan assumed Windows; building natively on macOS instead.
