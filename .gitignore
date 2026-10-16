@@ -1,0 +1,22 @@
+# build output
+mods/*/build/
+*.geode
+*.dylib
+*.o
+
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# experiment output
+runs/
+data/raw/
+*.csv
+!docs/**/*.csv
+
+# os / editor
+.DS_Store
+.vscode/
+.idea/

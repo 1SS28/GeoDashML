@@ -1,0 +1,12 @@
+{
+    "geode": "5.11.2",
+    "gd": {
+        "mac": "2.209"
+    },
+    "version": "v0.1.0",
+    "id": "sanjey.gdml_spike",
+    "name": "GDML Spike",
+    "developer": "sanjey",
+    "description": "Phase 1 spike: pause the physics loop and step one tick per keypress.",
+    "tags": ["developer"]
+}
