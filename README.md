@@ -2,7 +2,7 @@
 
 Can a reinforcement-learning agent learn to clear Geometry Dash levels, and how does its sample efficiency compare to humans? This repo holds the game bridge (a Geode mod), the Gymnasium environment, the training code, and the write-up.
 
-Status: Phase 1 spike. Getting a Geode mod to pause the physics loop and step it one tick at a time on macOS.
+Status: Phase 1 spike passed on 2026-10-16. A Geode mod pauses the physics loop and steps it one 240 Hz tick per keypress on macOS, with a constant 1.2982 units of x per tick. Next: the socket bridge.
 
 ## Layout
 
@@ -19,7 +19,7 @@ Status: Phase 1 spike. Getting a Geode mod to pause the physics loop and step it
 | Geode CLI | 3.9.0 |
 | macOS | 26.6.2, Apple Silicon |
 
-Steam is set to update the game only on launch. Do not let it update mid-project.
+The game is pinned by `scripts/pin-gd-2.2081.sh`, which locks the Steam manifest. Launch the game through Steam (`open steam://rungameid/322170`); launching the .app directly makes it hand off to Steam and exit.
 
 ## Building the spike mod
 
