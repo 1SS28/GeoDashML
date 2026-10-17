@@ -130,7 +130,7 @@ def test_search_clears_the_toy_level():
     assert sol.completed and sol.ticks == 300 and sol.final_x == 300.0
     assert sol.attempts == bot.attempts and sol.attempts + bot.trim_attempts == toy.resets
     assert sol.attempts < 300, sol.attempts
-    assert bot.commits >= 4, "at least press, release, press, release before the last spike"
+    assert bot.commits >= 2, "a tap over the first spike, a tap over the triple, then the tap that completes"
     assert [d for _, d in sol.inputs] == [i % 2 == 0 for i in range(len(sol.inputs))]
     assert all(t < sol.ticks for t, _ in sol.inputs)
     assert sol.search["commits"] == bot.commits and sol.search["windows"] == [60, 120, 240]
@@ -173,9 +173,10 @@ def test_impossible_level_exhausts_the_search():
     with pytest.raises(SearchError, match="exhausted"):
         bot.solve()
     assert bot.backtracks == 1 and bot.commits == 0
-    # root; chunk 0 is decisions 0..11 (ticks 3..47, the window is clipped at the start); chunks 1 and 2
-    # are empty; then every pair of those 12 decisions
-    assert bot.attempts == 1 + 12 + 12 * 11 // 2
+    # root; the first window holds decisions 0..11 (ticks 3..47, clipped at the level start): 12 taps,
+    # then 12 toggles; the wider windows are empty; then the 66 pairs of those 12 decisions minus the
+    # 11 that were already tried as taps
+    assert bot.attempts == 1 + 12 + 12 + (66 - 11)
 
 
 def test_decision_windows_and_toggles():

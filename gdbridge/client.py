@@ -40,7 +40,7 @@ class State:
     level_length: float
 
     @classmethod
-    def from_dict(cls, d: dict) -> "State":
+    def from_dict(cls, d: dict) -> State:
         return cls(**{k: d[k] for k in cls.__dataclass_fields__})
 
 
@@ -67,7 +67,7 @@ class GDBridge:
         finally:
             self.sock.close()
 
-    def __enter__(self) -> "GDBridge":
+    def __enter__(self) -> GDBridge:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -141,7 +141,10 @@ class GDBridge:
             except BridgeError as e:
                 last_err = e
             time.sleep(0.05)
-        raise BridgeError(f"level {level_id} did not become ready: {last_err}")
+        raise BridgeError(
+            f"level {level_id} did not become ready: {last_err}. A freshly loaded level starts only while the "
+            "game window is frontmost (the director's scheduler pauses in the background); bring it to the front."
+        )
 
     def detach(self) -> None:
         try:

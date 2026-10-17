@@ -146,8 +146,8 @@ Needs the game running with the bridge and nothing else attached. Numbers for St
 The bot uses the environment's protocol: one decision every `frame_skip` ticks starting at bridge tick 3 (the game swallows presses on ticks 0 to 2), each decision hold or release. A schedule is the list of decisions at which the button state toggles, starting released, so a cube tap is two toggles and a ship climb is two toggles.
 
 - It keeps a stack of **commits**. A commit is a schedule known to die at tick D when nothing is added after it: the longest surviving prefix so far.
-- To extend a commit it replays from the start every schedule that differs by one toggle inside a window of `windows[0]` ticks before D (one bridge `run` per candidate, ~500k ticks/s, so no checkpoints are needed), and commits the one that dies latest; ties go to the latest toggle. Toggles after the new death tick are dropped.
-- If no single toggle in the nearest window dies later than D, the next window is tried, then pairs of toggles within `pair_window_ticks`. If nothing helps, the commit is popped and the previous commit's next-best candidate is taken instead (backtracking).
+- To extend a commit it replays candidate schedules from the start (one bridge `run` per candidate, ~500k ticks/s, so no checkpoints are needed) and commits the one that dies latest; ties go to the one tried first. Candidates differ from the commit inside a window of `windows[0]` ticks before D and come in families, each over the window's decisions latest first: **taps** (press at decision j, release at j + 1, the cube's natural move) are tried first and the best tap is committed at once if it dies at least `tap_margin_ticks` later than D; otherwise **toggles** (flip the button state from decision j onward: hold or release from there, the ship's natural move) are tried too and the best of everything that dies later than D is committed. Toggles after the new death tick are dropped.
+- If nothing in the nearest window dies later than D, the next window is tried, then pairs of toggles within `pair_window_ticks` (a release and a later jump, for example). If nothing helps, the commit is popped and the previous commit's next-best candidate is taken instead (backtracking).
 - A candidate replay runs `horizon_ticks` past the commit's death tick; one still alive at the end is run again with a doubled length until it dies or completes.
 - The first replay whose final state has `completed` ends the search. The exact completion tick is then found by bisection on the run length; those replays are reported as `trim_attempts` and not counted as attempts.
 - **Every replay from the start is one attempt**, the metric in `docs/research.md`. `Solution.progress` records the furthest alive x after each attempt that improved it (the best-percent-versus-attempts curve). The search is deterministic given its configuration.
@@ -158,7 +158,8 @@ Plain depth-first search over decisions was rejected because it enumerates every
 |---|---|---|
 | `level_id` | 1 | official level ID |
 | `frame_skip`, `first_decision_tick` | 4, 3 | the decision protocol; must match the env's `frame_skip` and `reset_warmup_ticks` |
-| `windows` | (120, 240, 480) | single-toggle search windows in ticks before the death, nearest chunk first |
+| `windows` | (120, 240, 480) | search windows in ticks before the death, nearest chunk first |
+| `tap_margin_ticks` | 16 | a tap is committed without trying its window's toggles if it dies at least this much later |
 | `pair_window_ticks` | 240 | window for toggle pairs, tried after all single toggles failed |
 | `horizon_ticks` | 2400 | how far past the commit's death a candidate replay runs |
 | `max_attempts` | 100000 | budget; `SearchError` when exhausted |

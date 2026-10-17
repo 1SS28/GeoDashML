@@ -6,19 +6,27 @@ decision indices at which the button state toggles (press, release, press, ...),
 
 Search: a stack of commits. A commit is a schedule known to die at tick D when nothing is added
 after it, so it is the longest surviving prefix found so far. To extend it the bot replays, from the
-start, every schedule that differs by one toggle inside a window of ticks before D, one bridge `run`
-per candidate, and commits the candidate that dies latest (ties go to the latest toggle). Toggles
-after the new death tick are dropped. When no single toggle inside the window dies later than D the
-window widens, then pairs of toggles are tried, and when nothing helps the commit is popped and the
-previous commit's next-best candidate is taken instead (backtracking). The search stops at the first
-replay whose final state has `completed`, or that is alive at `target_x` for a partial search.
+start, candidate schedules that differ from it inside a window of ticks before D, one bridge `run`
+per candidate, and commits the candidate that dies latest (ties go to the one tried first). The
+candidate families, tried in this order, each over the window's decisions latest first:
 
-Why not a plain depth-first search over decisions: with a death D the decisions that matter lie
+1. taps: press at decision j and release at j + 1 (a 4-tick tap, the cube's natural move). If the
+   best tap dies at least `tap_margin_ticks` later than D it is committed at once;
+2. toggles: flip the button state from decision j onward (hold or release from there, the ship's
+   natural move). Anything that dies later than D is now a candidate and the best is committed;
+3. the same two families over the next, wider windows;
+4. pairs of toggles inside `pair_window_ticks` (a release and a later press, or any tap or hold).
+
+Toggles after the new death tick are dropped. When nothing in any family dies later than D, the
+commit is popped and the previous commit's next-best candidate is taken instead (backtracking).
+The search stops at the first replay whose final state has `completed`, or that is alive at
+`target_x` for a partial search.
+
+Why not a plain depth-first search over decisions: with a death at D the decisions that matter lie
 in a window before D, and plain DFS enumerates all 2^k settings of the k decisions between the
 needed fix and the death before it moves the fix one decision earlier, so a ship obstacle that
 needs a hold starting 15 decisions before the crash costs tens of thousands of replays. Scoring
-each single change by how much later the cube dies makes an obstacle cost about one window of
-replays instead.
+each candidate by how much later the cube dies costs about one window of replays per obstacle.
 
 Every replay from the start is one attempt, the metric docs/research.md compares across agents.
 The search is deterministic given its configuration and the game's determinism.
@@ -50,11 +58,14 @@ class SearchConfig:
     """First tick at which a press registers: the game swallows presses on ticks 0 to 2."""
 
     windows: tuple[int, ...] = (120, 240, 480)
-    """Single-toggle candidates are tried within this many ticks before the death, nearest chunk
-    first; the next chunk is tried only if nothing in the nearer ones dies later."""
+    """Candidates are tried within this many ticks before the death, nearest chunk first; the next
+    chunk is tried only if nothing in the nearer ones dies later."""
+
+    tap_margin_ticks: int = 16
+    """A tap is committed without trying the toggles of its window if it dies at least this much later."""
 
     pair_window_ticks: int = 240
-    """Toggle pairs are tried within this many ticks before the death, after all single toggles failed."""
+    """Toggle pairs are tried within this many ticks before the death, after everything else failed."""
 
     horizon_ticks: int = 2400
     """A candidate replay runs until this many ticks past the commit's death tick; a candidate still
@@ -73,8 +84,8 @@ class SearchConfig:
             raise ValueError("frame_skip must be >= 1 and first_decision_tick >= 0")
         if not self.windows or any(w <= 0 for w in self.windows) or list(self.windows) != sorted(set(self.windows)):
             raise ValueError("windows must be strictly increasing positive tick counts")
-        if self.pair_window_ticks < 0 or self.horizon_ticks < 1 or self.max_attempts < 1:
-            raise ValueError("pair_window_ticks >= 0, horizon_ticks >= 1, max_attempts >= 1")
+        if self.pair_window_ticks < 0 or self.horizon_ticks < 1 or self.max_attempts < 1 or self.tap_margin_ticks < 1:
+            raise ValueError("pair_window_ticks >= 0, horizon_ticks >= 1, max_attempts >= 1, tap_margin_ticks >= 1")
 
     def tick(self, j: int) -> int:
         """Bridge tick of decision j."""
@@ -108,9 +119,10 @@ class _Frame:
     schedule: tuple[int, ...]
     death_tick: int
     pool: list = field(default_factory=list)  # (death_tick, -order, schedule), best first
+    tried: set = field(default_factory=set)
     evaluated: int = 0
-    chunk: int = 0
-    pairs_done: bool = False
+    phase: int = 0
+    ready: bool = False  # the pool may be committed from
 
 
 class _Solved(Exception):
@@ -131,6 +143,7 @@ class SearchBot:
         self.depth = 0
         self.best_x = 0.0
         self.progress: list[tuple[int, float]] = []
+        self._phases = [(kind, w) for w in range(len(self.config.windows)) for kind in ("tap", "toggle")] + [("pairs", -1)]
         self._ensure_level()
         self.level_length = float(self.bridge.state().level_length)
 
@@ -167,18 +180,24 @@ class SearchBot:
             self.bridge.render(True)
 
     def _next_candidate(self, frame: _Frame) -> tuple[tuple[int, ...], int] | None:
+        """The next schedule to commit from this frame and its death tick, or None when exhausted."""
         cfg = self.config
         while True:
-            if frame.pool:
+            if frame.pool and frame.ready:
                 death, _, schedule = frame.pool.pop(0)
                 return schedule, death
-            if frame.chunk < len(cfg.windows):
-                js = self._chunk_decisions(frame.death_tick, frame.chunk)
-                frame.chunk += 1
-                self._evaluate(frame, [self._toggle(frame.schedule, j) for j in js])
-                continue
-            if not frame.pairs_done:
-                frame.pairs_done = True
+            if frame.phase >= len(self._phases):
+                return None
+            kind, w = self._phases[frame.phase]
+            frame.phase += 1
+            if kind == "tap":
+                cands = [self._toggle(self._toggle(frame.schedule, j), j + 1) for j in self._chunk_decisions(frame.death_tick, w)]
+                self._evaluate(frame, cands)
+                frame.ready = bool(frame.pool) and frame.pool[0][0] >= frame.death_tick + cfg.tap_margin_ticks
+            elif kind == "toggle":
+                self._evaluate(frame, [self._toggle(frame.schedule, j) for j in self._chunk_decisions(frame.death_tick, w)])
+                frame.ready = bool(frame.pool)
+            else:
                 js = self._window_decisions(frame.death_tick, cfg.pair_window_ticks)
                 cands = [
                     self._toggle(self._toggle(frame.schedule, j1), j2)
@@ -186,13 +205,15 @@ class SearchBot:
                     for j1 in reversed([j for j in js if j < j2])
                 ]
                 self._evaluate(frame, cands)
-                continue
-            return None
+                frame.ready = bool(frame.pool)
 
     def _evaluate(self, frame: _Frame, candidates: list[tuple[int, ...]]) -> None:
-        """Replays every candidate; the ones that die later than the frame join its pool, best first."""
+        """Replays every candidate not tried yet; the ones that die later than the frame join its pool."""
         run_ticks = frame.death_tick + self.config.horizon_ticks
         for schedule in candidates:
+            if schedule in frame.tried:
+                continue
+            frame.tried.add(schedule)
             r = self._settle(self._replay(schedule, run_ticks))
             if r.death_tick > frame.death_tick:
                 frame.pool.append((r.death_tick, -frame.evaluated, schedule))
