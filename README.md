@@ -12,7 +12,8 @@ Status: Phase 2 done on 2026-10-16. The bridge mod (Phase 1) steps the game one 
 - `mods/spike/`: the Phase 1 spike that proved the hooks (pause and single-step by keypress). Kept for the record; do not install both mods at once.
 - `gdbridge/`: Python client. `tests/` and `scripts/bench_throughput.py` need the game running with the bridge mod.
 - `gdenv/`: the Gymnasium environment, see below. `scripts/soak_random.py` is the random-agent soak.
-- `scripts/pin-gd-2.2081.sh`: pins the Steam install at 2.2081.
+- `gdsearch/`: the search bot and the backward-curriculum helpers, see below. `data/solutions/<level_id>.json` holds the input schedules it found.
+- `scripts/pin-gd-2.2081.sh`: pins the Steam install at 2.2081. `scripts/refresh-steam-manifest.py` keeps the pin launchable after a new GD release.
 
 ## Pinned versions
 
@@ -24,6 +25,8 @@ Status: Phase 2 done on 2026-10-16. The bridge mod (Phase 1) steps the game one 
 | macOS | 26.6.2, Apple Silicon |
 
 The game is pinned by `scripts/pin-gd-2.2081.sh`, which locks the Steam manifest. Launch the game through Steam (`open steam://rungameid/322170`); launching the .app directly makes it hand off to Steam and exit.
+
+Steam launches a game only while the locked manifest's build id matches the public branch. When RobTop ships a new build, Steam flags the pinned install as "Update Required", cannot write the locked manifest, and refuses to launch (`AppError_11`). Run `python3 scripts/refresh-steam-manifest.py` (with Steam running, the game closed): it reads the current build id and depot manifest from Steam's `appinfo.vdf` and writes them into the locked manifest without touching the game files. See the notebook, 2026-10-17.
 
 ## Building a mod
 
@@ -117,3 +120,92 @@ uv run python scripts/soak_random.py --episodes 10000
 ```
 
 The game tests check the observation shape and contents against a brute-force scan of the geometry, run gymnasium's `check_env`, replay the same actions three times for identical trajectories, compare delayed traces with bridge traces for delays of 0, 1, 6 and 12 ticks, start from a practice checkpoint, and read the CSV back. The soak runs a Bernoulli(0.5) agent on Stereo Madness; see the notebook for the numbers.
+
+## Search bot (`gdsearch`)
+
+```bash
+uv run python -m gdsearch --level 1                  # clears Stereo Madness, writes data/solutions/1.json, verifies it by replay
+uv run python -m gdsearch --level 1 --target-x 1500  # partial search: stop once alive at x 1500
+```
+
+```python
+from gdbridge import GDBridge
+from gdsearch import SearchBot, SearchConfig, Solution
+
+with GDBridge() as b:
+    sol = SearchBot(b, SearchConfig(level_id=1)).solve()
+    sol.save()                      # data/solutions/1.json
+sol = Solution.load(1)
+sol.action_at(k)                    # GDEnv action for decision k (frame_skip 4, action_delay_ticks 0)
+```
+
+Needs the game running with the bridge and nothing else attached. Numbers for Stereo Madness: see the 2026-10-17 notebook entry.
+
+### How it searches
+
+The bot uses the environment's protocol: one decision every `frame_skip` ticks starting at bridge tick 3 (the game swallows presses on ticks 0 to 2), each decision hold or release. A schedule is the list of decisions at which the button state toggles, starting released, so a cube tap is two toggles and a ship climb is two toggles.
+
+- It keeps a stack of **commits**. A commit is a schedule known to die at tick D when nothing is added after it: the longest surviving prefix so far.
+- To extend a commit it replays from the start every schedule that differs by one toggle inside a window of `windows[0]` ticks before D (one bridge `run` per candidate, ~500k ticks/s, so no checkpoints are needed), and commits the one that dies latest; ties go to the latest toggle. Toggles after the new death tick are dropped.
+- If no single toggle in the nearest window dies later than D, the next window is tried, then pairs of toggles within `pair_window_ticks`. If nothing helps, the commit is popped and the previous commit's next-best candidate is taken instead (backtracking).
+- A candidate replay runs `horizon_ticks` past the commit's death tick; one still alive at the end is run again with a doubled length until it dies or completes.
+- The first replay whose final state has `completed` ends the search. The exact completion tick is then found by bisection on the run length; those replays are reported as `trim_attempts` and not counted as attempts.
+- **Every replay from the start is one attempt**, the metric in `docs/research.md`. `Solution.progress` records the furthest alive x after each attempt that improved it (the best-percent-versus-attempts curve). The search is deterministic given its configuration.
+
+Plain depth-first search over decisions was rejected because it enumerates every setting of the decisions between the needed fix and the death before it moves the fix one decision earlier, which is exponential in that gap (a ship obstacle that needs a hold starting 15 decisions before the crash would cost tens of thousands of replays); scoring each single change by how much later the cube dies costs about one window of replays per obstacle instead.
+
+| `SearchConfig` field | default | meaning |
+|---|---|---|
+| `level_id` | 1 | official level ID |
+| `frame_skip`, `first_decision_tick` | 4, 3 | the decision protocol; must match the env's `frame_skip` and `reset_warmup_ticks` |
+| `windows` | (120, 240, 480) | single-toggle search windows in ticks before the death, nearest chunk first |
+| `pair_window_ticks` | 240 | window for toggle pairs, tried after all single toggles failed |
+| `horizon_ticks` | 2400 | how far past the commit's death a candidate replay runs |
+| `max_attempts` | 100000 | budget; `SearchError` when exhausted |
+| `target_x` | None | stop once alive at this x (partial search) |
+| `render` | False | rendering off during the search (restored afterwards) |
+| `log_every` | 0 | progress line every n attempts |
+
+### Solution file format
+
+`data/solutions/<level_id>.json`, written by `Solution.save()`:
+
+| field | meaning |
+|---|---|
+| `level_id` | official level ID |
+| `inputs` | `[[tick, down], ...]`: bridge ticks counted from a from-start reset, alternating press/release from a press, every tick a decision tick (`3 + 4k`). The format of the bridge's `run` command and of `StartCheckpoint.inputs`. |
+| `ticks` | ticks from the reset to the completion flag: the shortest run that completes. `inputs` all lie before it. |
+| `attempts` | replays from the start until the clear was observed |
+| `wall_time_s` | search wall time |
+| `completed` | True for a full clear; False for a `target_x` partial search (then `ticks` is the tick that first reached the target) |
+| `frame_skip`, `first_decision_tick` | the decision protocol the schedule was built for |
+| `level_length`, `final_x` | level units; `final_x` is the player's x when the flag appeared |
+| `hash` | the bridge's trajectory hash of the `ticks`-tick replay, for a one-line determinism check |
+| `search` | the `SearchConfig` plus `commits`, `backtracks`, `trim_attempts` |
+| `progress` | `[[attempt, best_x], ...]` |
+| `bridge`, `gd`, `created` | versions and an ISO timestamp |
+
+`Solution.replay(bridge)` resets from the start, releases, and runs the schedule for `ticks` ticks; `Solution.action_at(k)` and `env_actions()` turn it into GDEnv actions; `Solution.prefix(T)` gives the inputs before tick T.
+
+### Backward curriculum
+
+`gdsearch.curriculum` turns a solution into start points for training backward from the end (Phase 4):
+
+```python
+from gdsearch import backward_schedule, checkpoint_at, suffix_policy, suffix_decisions
+
+cps = backward_schedule(sol, spacing_ticks=480)   # [StartCheckpoint(tick=..., inputs=prefix), ..., None]
+env = GDEnv(GDEnvConfig(start_checkpoint=cps[0]))
+policy = suffix_policy(sol, cps[0])               # env decision k -> the solution's action from there
+```
+
+Tick bookkeeping: after any reset the first two ticks do not move the player, and the env runs 3 released warm-up ticks, so a practice checkpoint placed after T ticks of the solution puts env decision k on solution tick `T + 1 + 4k`. For that to be a decision tick, T must be 2 modulo `frame_skip`; `checkpoint_at(sol, tick)` aligns down to such a T and `StartCheckpoint(tick=T, inputs=sol.prefix(T))` replays the prefix. T = 2 is the level start. `backward_schedule` spaces checkpoints `spacing_ticks` apart from the end back to the start and, with `released_only` (default), moves each one earlier until the solution has the button released there, so the checkpoint's released state matches the solution's; its last entry is `None`, the plain level start outside practice mode, where the attempts metric lives. `suffix_decisions` is the number of decisions from a checkpoint to the end.
+
+### Tests
+
+```bash
+uv run pytest tests/test_gdsearch_offline.py   # no game: a toy cube world with the bridge's interface drives the search
+uv run pytest tests/test_gdsearch.py           # game: replay the saved solution in the bridge and through GDEnv, partial-search determinism, checkpoint starts
+```
+
+The offline tests check that the search clears the toy level, is deterministic, stops at `target_x`, exhausts an impossible level with the expected attempt count, and that solutions validate and round-trip through JSON. The game tests need `data/solutions/1.json`.
