@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import signal
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -146,6 +147,10 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
         policy.save(run_dir / name, stage=driver.index, stage_label=driver.label, episodes=episodes, decisions=decisions,
                     seed=cfg.seed, train_config=cfg.to_dict(), level_id=cfg.level_id)
 
+    def _terminate(signum, frame):  # a background job ignores SIGINT; SIGTERM stops the run cleanly instead
+        raise KeyboardInterrupt
+
+    previous_handler = signal.signal(signal.SIGTERM, _terminate)
     try:
         obs, _ = env.reset()
         episodes += 1
@@ -215,6 +220,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
         stopped = "interrupted"
         log.info("interrupted")
     finally:
+        signal.signal(signal.SIGTERM, previous_handler)
         stage_record(driver.snapshot(), stopped)
         stages_file.close()
         save()

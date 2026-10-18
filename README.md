@@ -223,8 +223,8 @@ The offline tests check that the search clears the toy level, is deterministic, 
 ## Reinforcement learning (`gdrl`)
 
 ```bash
-uv run python -m gdrl train --run runs/ppo_sm --seed 0        # one seed; writes runs/ppo_sm/seed0/
-uv run python -m gdrl train --run runs/ppo_sm --seed 1        # seeds run one after another: one bridge client at a time
+uv run python -m gdrl train --run runs/ppo_sm --seed 0 --advance-threshold 0.5   # one seed; writes runs/ppo_sm/seed0/
+uv run python -m gdrl train --run runs/ppo_sm --seed 1 --advance-threshold 0.5   # seeds run one after another: one bridge client at a time
 uv run python -m gdrl report --run runs/ppo_sm --baseline 3956
 uv run python -m gdrl play --run runs/ppo_sm/seed0 --install  # watch the policy; save its run as a solution and install it for the A key
 ```
@@ -263,7 +263,7 @@ Every env reset is an attempt, checkpoint resets included; the env's `episodes.c
 | `seed` | 0 | torch, numpy and the action sampling; runs are reproducible given the seed and `torch_threads` |
 | `level_id`, `frame_skip`, `action_delay_ticks`, `render`, `max_episode_ticks` | 1, 4, 0, False, 30000 | passed to `GDEnvConfig` |
 | `solution_path`, `spacing_ticks` | `data/solutions/<level_id>.json`, 480 | the curriculum's source and checkpoint spacing |
-| `advance_threshold`, `advance_window` | 0.8, 50 | stage switch rule |
+| `advance_threshold`, `advance_window` | 0.8, 50 | stage switch rule; the Stereo Madness runs use 0.5 (see the notebook, 2026-10-18) |
 | `stop_after_start_clears` | 1 | stop after this many from-start completions (0: budget only) |
 | `total_decisions` | 50,000,000 | env-step budget |
 | `n_steps`, `n_epochs`, `minibatch_size` | 2048, 4, 256 | rollout length and update schedule |
