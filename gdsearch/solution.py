@@ -50,7 +50,7 @@ class Solution:
 
     search: dict = field(default_factory=dict)
     progress: list = field(default_factory=list)
-    """[[attempt, best_x], ...]: the furthest alive x after each attempt that improved it."""
+    """[[attempt, best_x], ...]: the furthest x reached (where the run ended) after each attempt that improved it."""
 
     bridge: str | None = None
     gd: str | None = None

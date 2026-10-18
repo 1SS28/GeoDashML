@@ -110,9 +110,13 @@ class Replay:
     death_tick: int | None
     finished: bool
     alive_x: float
+    """x where the run ended: the death position, the end portal, or the cap."""
+
     state: State
     hash: str
-    trace: list
+    trace: list | None
+    """Per-tick [x, y, yvel, dead]; only requested for a partial search (target_x), where the tick
+    that first reached the target is needed."""
 
 
 @dataclass
@@ -238,20 +242,16 @@ class SearchBot:
         run_ticks = cfg.max_run_ticks if run_ticks is None else run_ticks
         inputs = [(0, False), *schedule_inputs(schedule, cfg.first_decision_tick, cfg.frame_skip)]
         self.bridge.reset(from_start=True)
-        res = self.bridge.run(run_ticks, inputs, trace=True, stop=True)
-        trace = res.trace
+        res = self.bridge.run(run_ticks, inputs, trace=cfg.target_x is not None, stop=True)
         s = res.state
-        death = len(trace) - 1 if trace and trace[-1][3] else None
-        if death is None:
-            alive_x = trace[-1][0] if trace else 0.0
-        else:
-            alive_x = trace[death - 1][0] if death > 0 else 0.0
-        r = Replay(schedule, len(trace), death, bool(s.finished), float(alive_x), s, res.hash, trace)
+        ticks = s.tick  # the bridge's tick counter restarts at the reset, so this is the ticks that ran
+        death = ticks - 1 if s.dead else None
+        r = Replay(schedule, ticks, death, bool(s.finished), float(s.x), s, res.hash, res.trace)
         if count:
             self.attempts += 1
-            if alive_x > self.best_x:
-                self.best_x = alive_x
-                self.progress.append((self.attempts, round(alive_x, 2)))
+            if r.alive_x > self.best_x:
+                self.best_x = r.alive_x
+                self.progress.append((self.attempts, round(r.alive_x, 2)))
             if cfg.log_every and self.attempts % cfg.log_every == 0:
                 pct = 100.0 * self.best_x / self.level_length if self.level_length else 0.0
                 print(
@@ -261,7 +261,7 @@ class SearchBot:
                 )
             if self._success(r):
                 raise _Solved(r)
-        if death is None and not r.finished and run_ticks >= cfg.max_run_ticks:
+        if death is None and not r.finished and ticks >= cfg.max_run_ticks:
             raise SearchError(
                 f"alive after {r.ticks} ticks without completing, at x {s.x:.1f} of {self.level_length:.0f} "
                 f"(completed {s.completed}, end_anim {s.end_anim}, locked {s.locked}): schedule {schedule}"

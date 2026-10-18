@@ -139,3 +139,4 @@ def test_checkpoint_start_and_suffix_complete(make_env, solution, solution_trace
     # A second episode from the same checkpoint behaves the same.
     again = drive(env, suffix_policy(solution, cp), suffix_decisions(solution, cp) + 50)
     assert again[2] and env.last_state.finished and ticks_trace(again[1]) == trace
+    assert env.stats["checkpoint_replaced"] == 0, "the game placed a practice checkpoint of its own"

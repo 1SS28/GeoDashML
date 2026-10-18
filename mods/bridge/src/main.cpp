@@ -18,6 +18,7 @@
 #include <Geode/modify/FMODAudioEngine.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
+#include <Geode/modify/PlayerObject.hpp>
 #include <matjson.hpp>
 
 #include <arpa/inet.h>
@@ -41,7 +42,7 @@ namespace {
 
 constexpr int         kPort          = 41414;
 constexpr float       kTickDt        = 1.0f / 240.0f;
-constexpr char const* kBridgeVersion = "0.1.2";
+constexpr char const* kBridgeVersion = "0.1.3";
 constexpr char const* kGdVersion     = "2.2081";
 constexpr int         kMaxTicks      = 2'000'000;
 
@@ -50,6 +51,7 @@ struct Bridge {
     int         clientFd = -1;
     std::string inbuf;
     bool        stepping = false;  // true only while the bridge itself drives update()
+    bool        marking  = false;  // true only while the bridge itself places a practice checkpoint
     bool        renderOn = true;
     uint64_t    tick     = 0;      // ticks advanced since level entry or last reset
     bool attached() const { return clientFd >= 0; }
@@ -375,7 +377,9 @@ std::string handle(std::string const& line) {
     }
     if (cmd == "checkpoint") {
         if (!pl->m_isPracticeMode) return err("practice off");
+        g.marking = true;
         pl->markCheckpoint();
+        g.marking = false;
         return fmt::format(R"({{"ok":true,"state":{}}})", stateJson(pl));
     }
     if (cmd == "geometry") {
@@ -433,6 +437,13 @@ class $modify(BridgePlayLayer, PlayLayer) {
         PlayLayer::setupHasCompleted();
         g.tick = 0;
     }
+    // Practice mode places its own checkpoints every couple of seconds of play; after a long episode
+    // resetLevel() then respawns at the game's checkpoint, not the client's (2026-10-17). While a
+    // client is attached only the bridge's `checkpoint` command may place one.
+    void markCheckpoint() {
+        if (g.attached() && !g.marking) return;
+        PlayLayer::markCheckpoint();
+    }
     // Music start spins on FMOD's stream-open state while holding the audio lock in a tight
     // loop, which can starve FMOD's own thread and livelock inside resetLevel. The agent does
     // not need audio, so skip it entirely while a client is attached.
@@ -443,6 +454,14 @@ class $modify(BridgePlayLayer, PlayLayer) {
     void prepareMusic(bool dontWait) {
         if (g.attached()) return;
         PlayLayer::prepareMusic(dontWait);
+    }
+};
+
+// The automatic practice checkpoints start here (PlayerObject::updateCheckpointTest decides when).
+class $modify(BridgePlayer, PlayerObject) {
+    void tryPlaceCheckpoint() {
+        if (g.attached()) return;
+        PlayerObject::tryPlaceCheckpoint();
     }
 };
 

@@ -2,7 +2,7 @@
 
 Can a reinforcement-learning agent learn to clear Geometry Dash levels, and how does its sample efficiency compare to humans? This repo holds the game bridge (a Geode mod), the Gymnasium environment, the training code, and the write-up.
 
-Status: Phase 2 done on 2026-10-16. The bridge mod (Phase 1) steps the game one 240 Hz tick at a time over a loopback socket; 1000 identical input sequences gave one identical trajectory. `gdenv` wraps it as a Gymnasium environment with a fixed-size observation, exact action delays, checkpoint starts and per-episode CSV logs; a random agent ran 10,000 episodes without a crash. Next: Phase 3, the search bot and the backward curriculum.
+Status: Phase 3 done on 2026-10-17. The bridge mod (Phase 1) steps the game one 240 Hz tick at a time over a loopback socket; 1000 identical input sequences gave one identical trajectory. `gdenv` wraps it as a Gymnasium environment with a fixed-size observation, exact action delays, checkpoint starts and per-episode CSV logs; a random agent ran 10,000 episodes without a crash (Phase 2). `gdsearch` (Phase 3) clears Stereo Madness in 3,956 attempts with a deterministic search, replays the solution through the environment to completion, and turns it into a backward curriculum of checkpoint starts. Next: Phase 4, RL training on the curriculum.
 
 ## Layout
 
@@ -139,7 +139,7 @@ sol = Solution.load(1)
 sol.action_at(k)                    # GDEnv action for decision k (frame_skip 4, action_delay_ticks 0)
 ```
 
-Needs the game running with the bridge and nothing else attached. Numbers for Stereo Madness: see the 2026-10-17 notebook entry.
+Needs the game running with the bridge and nothing else attached. Stereo Madness: cleared in 3,956 attempts (96 commits, no backtracking, 164 inputs, 20,338 ticks to the end portal), deterministic across runs; see the 2026-10-17 notebook entry.
 
 ### How it searches
 
@@ -150,7 +150,7 @@ The bot uses the environment's protocol: one decision every `frame_skip` ticks s
 - If nothing in the nearest window dies later than D, the next window is tried, then pairs of toggles within `pair_window_ticks` (a release and a later jump, for example). If nothing helps, the commit is popped and the previous commit's next-best candidate is taken instead (backtracking).
 - A candidate replay uses the bridge's `stop` flag (bridge 0.1.2), so it ends on the tick that kills the player or reaches the level's end; a player still alive after `max_run_ticks` is an error.
 - The first replay that reaches the end (`State.finished`: the game's completion flag or the start of its end animation, see `docs/bridge-protocol.md`) ends the search, and its length is the exact completion tick.
-- **Every replay from the start is one attempt**, the metric in `docs/research.md`. `Solution.progress` records the furthest alive x after each attempt that improved it (the best-percent-versus-attempts curve). The search is deterministic given its configuration.
+- **Every replay from the start is one attempt**, the metric in `docs/research.md`. `Solution.progress` records the furthest x reached after each attempt that improved it (the best-percent-versus-attempts curve). Replays request no per-tick trace (the final state carries the death tick and position), except in a partial search. The search is deterministic given its configuration.
 
 Plain depth-first search over decisions was rejected because it enumerates every setting of the decisions between the needed fix and the death before it moves the fix one decision earlier, which is exponential in that gap (a ship obstacle that needs a hold starting 15 decisions before the crash would cost tens of thousands of replays); scoring each single change by how much later the cube dies costs about one window of replays per obstacle instead.
 
@@ -183,7 +183,7 @@ Plain depth-first search over decisions was rejected because it enumerates every
 | `level_length`, `final_x` | level units; `final_x` is the player's x when the flag appeared |
 | `hash` | the bridge's trajectory hash of the `ticks`-tick replay, for a one-line determinism check |
 | `search` | the `SearchConfig` plus `commits` and `backtracks` |
-| `progress` | `[[attempt, best_x], ...]` |
+| `progress` | `[[attempt, best_x], ...]`: furthest x reached after each attempt that improved it |
 | `bridge`, `gd`, `created` | versions and an ISO timestamp |
 
 `Solution.replay(bridge)` resets from the start, releases, and runs the schedule for `ticks` ticks; `Solution.action_at(k)` and `env_actions()` turn it into GDEnv actions; `Solution.prefix(T)` gives the inputs before tick T.

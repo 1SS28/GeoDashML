@@ -46,7 +46,7 @@ Returned by `state`, `step`, `run`, `reset`.
 
 ## Commands
 
-`ping` → `{"ok":true,"bridge":"0.1.2","gd":"2.2081","in_level":bool}`
+`ping` → `{"ok":true,"bridge":"0.1.3","gd":"2.2081","in_level":bool}`
 
 `state` → `{"ok":true,"state":{...}}`. Fails with `no level` outside a level.
 
@@ -61,6 +61,8 @@ Returned by `state`, `step`, `run`, `reset`.
 `practice {"on": bool}` → toggles practice mode. Returns state.
 
 `checkpoint` → places a practice checkpoint at the current position. Fails if practice mode is off.
+
+While a client is attached the game places no practice checkpoints of its own (since 0.1.3; `PlayerObject::tryPlaceCheckpoint` and any `markCheckpoint` not issued by this command are no-ops). Otherwise practice mode adds a checkpoint every couple of seconds of play and `reset` respawns at the newest one, not the client's.
 
 `render {"on": bool}` → sets the frame budget. Returns `{"ok":true}`.
 

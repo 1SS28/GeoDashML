@@ -68,7 +68,7 @@ class GDEnv(gym.Env):
         self._episode = 0
         self._episode_t0 = 0.0
         self._needs_reset = True
-        self.stats = {"steps": 0, "episodes": 0, "steps_with_truncated_objects": 0}
+        self.stats = {"steps": 0, "episodes": 0, "steps_with_truncated_objects": 0, "checkpoint_replaced": 0}
 
         self._logger: EpisodeLogger | None = None
         if cfg.run_dir:
@@ -120,7 +120,13 @@ class GDEnv(gym.Env):
         else:
             if not self._checkpoint_placed:
                 self._place_checkpoint(cp)
-            self.bridge.reset(from_start=False)
+            s = self.bridge.reset(from_start=False)
+            if (s.x, s.y) != (self.checkpoint_state.x, self.checkpoint_state.y):
+                # The game placed a practice checkpoint of its own during the last episode (bridge
+                # 0.1.3 suppresses those while attached); put ours back and respawn there.
+                self.stats["checkpoint_replaced"] += 1
+                self._place_checkpoint(cp)
+                self.bridge.reset(from_start=False)
         # Start every episode released, whatever the last one ended with, and run the warm-up ticks
         # during which the game ignores input (see GDEnvConfig.reset_warmup_ticks).
         if cfg.reset_warmup_ticks:
