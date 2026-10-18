@@ -5,7 +5,7 @@ Newest entry at the top. Record surprises the same day.
 ## 2026-10-18: watching the solution in the game
 
 - Bridge 0.1.4 adds solution playback: with no client attached, A in a level (or the `play` command followed by `detach`) resets it and the mod drives the physics itself at 240 ticks of real time per second, applying `solutions/<level_id>.json` at exact ticks. It is the bridge's lockstep machinery paced by the frame clock instead of a client, so the run is the search bot's run to the tick: 1,498 ticks after 6 s, 16,930 after 70 s. `mod.json` finally carries the same version as the protocol (it had said v0.1.0 since Phase 1). `osascript` cannot send keystrokes from this session (no Accessibility permission), hence the `play` command for scripted tests.
-- One playback stopped at tick 3,154 with "left the level" (`PlayLayer::get()` returned null) and a new one started 11 s later; that looks like the level being exited and re-entered by hand, with A pressed again, but it is unconfirmed.
+- One playback stopped at tick 3,154 with "left the level" (`PlayLayer::get()` returned null) and a new one started 11 s later: that was Sanjey exiting the level and pressing A by hand, confirmed. The key works from the keyboard, and the hand-started run also reached the end portal after 20,338 ticks.
 
 ## 2026-10-17: Phase 3 search bot and curriculum
 
