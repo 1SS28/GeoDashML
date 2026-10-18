@@ -2,7 +2,7 @@
 
 Can a reinforcement-learning agent learn to clear Geometry Dash levels, and how does its sample efficiency compare to humans? This repo holds the game bridge (a Geode mod), the Gymnasium environment, the training code, and the write-up.
 
-Status: Phase 3 done on 2026-10-17. The bridge mod (Phase 1) steps the game one 240 Hz tick at a time over a loopback socket; 1000 identical input sequences gave one identical trajectory. `gdenv` wraps it as a Gymnasium environment with a fixed-size observation, exact action delays, checkpoint starts and per-episode CSV logs; a random agent ran 10,000 episodes without a crash (Phase 2). `gdsearch` (Phase 3) clears Stereo Madness in 3,956 attempts with a deterministic search, replays the solution through the environment to completion, and turns it into a backward curriculum of checkpoint starts. Next: Phase 4, RL training on the curriculum.
+Status: Phase 4 done on 2026-10-18 (see the notebook for the numbers). The bridge mod (Phase 1) steps the game one 240 Hz tick at a time over a loopback socket; 1000 identical input sequences gave one identical trajectory. `gdenv` wraps it as a Gymnasium environment with a fixed-size observation, exact action delays, checkpoint starts and per-episode CSV logs; a random agent ran 10,000 episodes without a crash (Phase 2). `gdsearch` (Phase 3) clears Stereo Madness in 3,956 attempts with a deterministic search, replays the solution through the environment to completion, and turns it into a backward curriculum of checkpoint starts. `gdrl` (Phase 4) trains a PPO policy on that curriculum; the attempts it needs to clear the level from the start are compared with the search bot's 3,956 in the notebook. Next: action-delay ablations and more levels.
 
 ## Layout
 
@@ -13,6 +13,7 @@ Status: Phase 3 done on 2026-10-17. The bridge mod (Phase 1) steps the game one 
 - `gdbridge/`: Python client. `tests/` and `scripts/bench_throughput.py` need the game running with the bridge mod.
 - `gdenv/`: the Gymnasium environment, see below. `scripts/soak_random.py` is the random-agent soak.
 - `gdsearch/`: the search bot and the backward-curriculum helpers, see below. `data/solutions/<level_id>.json` holds the input schedules it found.
+- `gdrl/`: PPO training on the environment with the backward curriculum, metrics, and the play/export mode, see below. Runs live under `runs/` (gitignored).
 - `scripts/pin-gd-2.2081.sh`: pins the Steam install at 2.2081. `scripts/refresh-steam-manifest.py` keeps the pin launchable after a new GD release.
 
 ## Pinned versions
@@ -218,3 +219,65 @@ uv run pytest tests/test_gdsearch.py           # game: replay the saved solution
 ```
 
 The offline tests check that the search clears the toy level, is deterministic, stops at `target_x`, exhausts an impossible level with the expected attempt count, and that solutions validate and round-trip through JSON. The game tests need `data/solutions/1.json`.
+
+## Reinforcement learning (`gdrl`)
+
+```bash
+uv run python -m gdrl train --run runs/ppo_sm --seed 0        # one seed; writes runs/ppo_sm/seed0/
+uv run python -m gdrl train --run runs/ppo_sm --seed 1        # seeds run one after another: one bridge client at a time
+uv run python -m gdrl report --run runs/ppo_sm --baseline 3956
+uv run python -m gdrl play --run runs/ppo_sm/seed0 --install  # watch the policy; save its run as a solution and install it for the A key
+```
+
+```python
+from gdrl import TrainConfig, train
+result = train(TrainConfig(run_dir="runs/ppo_sm/seed0", seed=0))   # needs the game with the bridge, nothing else attached
+result.cleared_at_episode                                           # attempts to clear from the level start
+```
+
+PPO is written in PyTorch in `gdrl/ppo.py` (clipped surrogate, GAE, one environment, advantage normalisation, actor and critic clipped separately). No stable-baselines: the loop is small, the env is a single lockstep client, and the curriculum switches and the attempts bookkeeping have to sit inside the loop. The policy (`gdrl/policy.py`) is two tanh MLPs over the 975-float observation, 256-256 by default, with a Discrete(2) head and a value head. The agent sees what the observation already carries: the player state with the movement-mode one-hot, and the 64 nearest objects ahead with their roles. The level ID is deliberately not in the observation, so the policy cannot memorise per level; an ablation with a level-ID embedding is future work.
+
+### Curriculum
+
+`gdsearch.backward_schedule(Solution.load(level_id), spacing_ticks)` gives the start points, from `spacing_ticks` before the end back to the level start (`None`, outside practice mode). `gdrl.CurriculumDriver` holds the current stage; after every episode it looks at the last `advance_window` outcomes and, once at least `advance_threshold` of them completed (defaults 50 and 0.8), moves to the earlier checkpoint. The trainer applies it with `env.set_start_checkpoint(cp)` (the env places the practice checkpoint itself at the next reset) and logs every switch to `train.log` and `stages.jsonl`. Training stops after `stop_after_start_clears` completions from the level start (default 1), or at the `total_decisions` budget.
+
+### Attempts and curves
+
+Every env reset is an attempt, checkpoint resets included; the env's `episodes.csv` has one row per episode with `start_checkpoint` and `outcome`, so the episode number is the attempt count and **attempts to clear** is the episode number of the first `complete` from `start` (`gdrl.metrics.attempts_to_clear`). The game's own attempt counter (`attempt` column) also counts the two resets that place each stage's checkpoint. `best_percent_curve` gives best percent against attempts for from-start episodes (a checkpoint episode's percent is absolute progress and would read 96% from the first stage on); `mastered_curve` gives the curriculum's own progress, the share of the level the agent completes from, against attempts, from `stages.jsonl`. `python -m gdrl report` prints both as markdown.
+
+### Files per run
+
+| file | content |
+|---|---|
+| `train_config.json` | the `TrainConfig` |
+| `config.json`, `episodes.csv` | written by the env (first stage's config; one row per episode) |
+| `train.log` | one line per PPO update, every stage switch, the clear |
+| `stages.jsonl` | one row per stage: checkpoint tick and x, episodes and completion rate in the stage, totals when it was passed |
+| `policy.pt`, `policy_stage<k>.pt`, `policy_clear.pt` | latest policy; the policy when stage k was passed; the policy at the first from-start clear |
+| `result.json`, `solution.json` | `TrainResult`; the solution `play` exported |
+
+### `TrainConfig`
+
+| field | default | meaning |
+|---|---|---|
+| `seed` | 0 | torch, numpy and the action sampling; runs are reproducible given the seed and `torch_threads` |
+| `level_id`, `frame_skip`, `action_delay_ticks`, `render`, `max_episode_ticks` | 1, 4, 0, False, 30000 | passed to `GDEnvConfig` |
+| `solution_path`, `spacing_ticks` | `data/solutions/<level_id>.json`, 480 | the curriculum's source and checkpoint spacing |
+| `advance_threshold`, `advance_window` | 0.8, 50 | stage switch rule |
+| `stop_after_start_clears` | 1 | stop after this many from-start completions (0: budget only) |
+| `total_decisions` | 50,000,000 | env-step budget |
+| `n_steps`, `n_epochs`, `minibatch_size` | 2048, 4, 256 | rollout length and update schedule |
+| `gamma`, `gae_lambda`, `learning_rate`, `clip_range`, `entropy_coef`, `value_coef`, `max_grad_norm` | 0.99, 0.95, 3e-4, 0.2, 0.001, 0.5, 0.5 | PPO; the entropy bonus is small because the completion-rate rule needs a near-deterministic policy over long suffixes (see the notebook) |
+| `reward_scale` | 4 | env rewards are divided by this: +1 per decision, -60 death, +600 completion |
+| `hidden_sizes`, `torch_threads` | (256, 256), 4 | network and CPU threads |
+
+### Play and export
+
+`python -m gdrl play --run runs/ppo_sm/seed0` loads `policy.pt` (`--policy policy_clear.pt` for the policy at the first clear), runs it greedily from the level start with rendering on, and, if the greedy run dies, up to `--sampled-episodes` runs with sampled actions. The best run's button changes become a tick-indexed schedule (`gdrl.play.actions_to_inputs`: a change at decision k is bridge tick `3 + 4k + action_delay_ticks`), which is replayed once with the bridge's `run` for the exact completion tick and hash and saved as a `gdsearch.Solution` (`<run>/solution.json` or `--out`); `--install` copies it where the mod reads it, so pressing A in the level plays the learned run. `attempts` in that file is the run's attempts to clear.
+
+### Tests
+
+```bash
+uv run pytest tests/test_gdrl_offline.py   # no game: config, GAE, PPO on a bandit, the driver, a full curriculum run on a fake corridor env, play/export
+uv run pytest tests/test_gdrl.py           # game: a 3,000-decision smoke run plus play/export, skipped when the bridge is unreachable
+```

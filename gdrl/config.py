@@ -49,7 +49,9 @@ class TrainConfig:
     gae_lambda: float = 0.95
     learning_rate: float = 3e-4
     clip_range: float = 0.2
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0.001
+    """0.01 stalled the curriculum at stage 10 (2026-10-18 notebook): the sampled policy kept making random fatal
+    choices in sections mastered thousands of episodes earlier, capping completion over a 5,000-tick suffix near 0.5."""
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
     reward_scale: float = 4.0

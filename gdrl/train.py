@@ -54,6 +54,7 @@ def seed_everything(seed: int, threads: int) -> np.random.Generator:
 
 def setup_logging(run_dir: Path) -> None:
     log.setLevel(logging.INFO)
+    log.propagate = False  # the CLI's basicConfig handler would print every line twice
     fmt = logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S")
     for h in list(log.handlers):
         if getattr(h, "_gdrl", False):
