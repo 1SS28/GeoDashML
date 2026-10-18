@@ -4,6 +4,8 @@ The bridge is a Geode mod that turns Geometry Dash into a lockstep simulator. A 
 
 Transport: newline-delimited JSON. One request object per line, one response object per line, strictly in order. One client at a time.
 
+Replies can be large (a 20,000-tick trace is about 1 MB). Since 0.1.2 the mod waits for the client to drain the socket when it is full instead of dropping the client; before that, replies above a few MB were cut off mid-line.
+
 Every response has `"ok": true` or `"ok": false` with an `"error"` string.
 
 ## Lockstep model
@@ -33,7 +35,9 @@ Returned by `state`, `step`, `run`, `reset`.
 | `on_ground` | bool | |
 | `dead` | bool | |
 | `started` | bool | the game has begun the level; false for about 1 s of real time after a load, during which ticks do nothing |
-| `completed` | bool | level finished |
+| `completed` | bool | the game's own completion flag (`m_hasCompletedLevel`). It is set when the real-time end animation finishes, which only runs while the window is frontmost; in lockstep rely on `end_anim` |
+| `end_anim` | bool | the end animation has started (`m_levelEndAnimationStarted`): set on the physics tick that reaches the end portal. The Python client's `State.finished` is `completed or end_anim` |
+| `locked` | bool | the player is locked (`m_isLocked`), as it is from the end portal on |
 | `percent` | float | progress as the game computes it |
 | `attempts` | int | the game's attempt counter for this level session |
 | `practice` | bool | practice mode on |
@@ -42,7 +46,7 @@ Returned by `state`, `step`, `run`, `reset`.
 
 ## Commands
 
-`ping` → `{"ok":true,"bridge":"0.1.1","gd":"2.2081","in_level":bool}`
+`ping` → `{"ok":true,"bridge":"0.1.2","gd":"2.2081","in_level":bool}`
 
 `state` → `{"ok":true,"state":{...}}`. Fails with `no level` outside a level.
 
@@ -50,7 +54,7 @@ Returned by `state`, `step`, `run`, `reset`.
 
 `step {"hold": bool|null, "n": int}` → applies `hold` if not null, advances `n` ticks (default 1). Returns state after the last tick. With `"trace": true` also returns `"trace": [[x, y, yvel, dead], ...]`, one entry per tick.
 
-`run {"ticks": int, "inputs": [[tick, down], ...]}` → advances `ticks` ticks, applying each `[tick, down]` input at the start of that tick. Returns the final state and `"hash"`, a 64-bit FNV-1a over every tick's `(x, y, yvel, dead)` as raw bytes, as a decimal string. With `"trace": true` returns the full trace too. This is the determinism primitive.
+`run {"ticks": int, "inputs": [[tick, down], ...]}` → advances `ticks` ticks, applying each `[tick, down]` input at the start of that tick. Returns the final state and `"hash"`, a 64-bit FNV-1a over every tick's `(x, y, yvel, dead)` as raw bytes, as a decimal string. With `"trace": true` returns the full trace too. This is the determinism primitive. With `"stop": true` the run ends after the tick that kills the player or reaches the level's end (`dead`, `completed` or `end_anim`), so fewer than `ticks` ticks may run; `state.tick` says how many, and the trace and hash cover only those.
 
 `reset {"from_start": bool}` → `resetLevel()` (respects practice checkpoints) or `resetLevelFromStart()`. Resets the bridge tick counter. Returns state.
 

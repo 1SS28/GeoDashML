@@ -19,8 +19,9 @@ candidate families, tried in this order, each over the window's decisions latest
 
 Toggles after the new death tick are dropped. When nothing in any family dies later than D, the
 commit is popped and the previous commit's next-best candidate is taken instead (backtracking).
-The search stops at the first replay whose final state has `completed`, or that is alive at
-`target_x` for a partial search.
+A replay runs with the bridge's `stop` flag, so it ends on the tick that kills the player or reaches
+the level's end; the search stops at the first replay that reaches the end (`State.finished`), or
+that is alive at `target_x` for a partial search.
 
 Why not a plain depth-first search over decisions: with a death at D the decisions that matter lie
 in a window before D, and plain DFS enumerates all 2^k settings of the k decisions between the
@@ -36,6 +37,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -67,9 +69,9 @@ class SearchConfig:
     pair_window_ticks: int = 240
     """Toggle pairs are tried within this many ticks before the death, after everything else failed."""
 
-    horizon_ticks: int = 2400
-    """A candidate replay runs until this many ticks past the commit's death tick; a candidate still
-    alive then is run again with a doubled length until it dies or completes."""
+    max_run_ticks: int = 60_000
+    """Longest replay. Runs stop at death or at the level's end, so this is only reached by a player
+    stuck alive (a level is at most about level_length / 0.7 ticks at slow speed), which is an error."""
 
     max_attempts: int = 100_000
     target_x: float | None = None
@@ -84,8 +86,10 @@ class SearchConfig:
             raise ValueError("frame_skip must be >= 1 and first_decision_tick >= 0")
         if not self.windows or any(w <= 0 for w in self.windows) or list(self.windows) != sorted(set(self.windows)):
             raise ValueError("windows must be strictly increasing positive tick counts")
-        if self.pair_window_ticks < 0 or self.horizon_ticks < 1 or self.max_attempts < 1 or self.tap_margin_ticks < 1:
-            raise ValueError("pair_window_ticks >= 0, horizon_ticks >= 1, max_attempts >= 1, tap_margin_ticks >= 1")
+        if self.pair_window_ticks < 0 or self.max_attempts < 1 or self.tap_margin_ticks < 1:
+            raise ValueError("pair_window_ticks >= 0, max_attempts >= 1, tap_margin_ticks >= 1")
+        if not 1 <= self.max_run_ticks <= MAX_RUN_TICKS:
+            raise ValueError(f"max_run_ticks must be between 1 and {MAX_RUN_TICKS}")
 
     def tick(self, j: int) -> int:
         """Bridge tick of decision j."""
@@ -100,18 +104,15 @@ class SearchConfig:
 @dataclass(frozen=True)
 class Replay:
     schedule: tuple[int, ...]
-    run_ticks: int
+    ticks: int
+    """Ticks that ran: the run stops after the tick that kills the player or reaches the end."""
+
     death_tick: int | None
-    completed: bool
+    finished: bool
     alive_x: float
     state: State
     hash: str
     trace: list
-
-    @property
-    def score(self) -> int:
-        """Later death is better; a replay alive at the end scores just past its length."""
-        return self.death_tick if self.death_tick is not None else self.run_ticks + 1
 
 
 @dataclass
@@ -130,14 +131,18 @@ class _Solved(Exception):
         self.replay = replay
 
 
+OnCommit = Callable[["SearchBot", tuple[int, ...], int], None]
+
+
 class SearchBot:
     """Searches the level the bridge is in (loading `config.level_id` if needed)."""
 
-    def __init__(self, bridge: GDBridge, config: SearchConfig | None = None):
+    def __init__(self, bridge: GDBridge, config: SearchConfig | None = None, on_commit: OnCommit | None = None):
         self.bridge = bridge
         self.config = config if config is not None else SearchConfig()
+        self.on_commit = on_commit
+        """Called after every commit with (bot, schedule, death_tick); the CLI saves the partial schedule."""
         self.attempts = 0
-        self.trim_attempts = 0
         self.commits = 0
         self.backtracks = 0
         self.depth = 0
@@ -159,7 +164,7 @@ class SearchBot:
         self.bridge.render(cfg.render)
         try:
             try:
-                root = self._settle(self._replay((), cfg.horizon_ticks))
+                root = self._replay(())
                 frames = [_Frame((), root.death_tick)]
                 while True:
                     frame = frames[-1]
@@ -174,6 +179,8 @@ class SearchBot:
                     schedule, death = nxt
                     frames.append(_Frame(self._truncate(schedule, death), death))
                     self.commits += 1
+                    if self.on_commit is not None:
+                        self.on_commit(self, frames[-1].schedule, death)
             except _Solved as solved:
                 return self._finish(solved.replay, time.perf_counter() - t0)
         finally:
@@ -209,45 +216,37 @@ class SearchBot:
 
     def _evaluate(self, frame: _Frame, candidates: list[tuple[int, ...]]) -> None:
         """Replays every candidate not tried yet; the ones that die later than the frame join its pool."""
-        run_ticks = frame.death_tick + self.config.horizon_ticks
         for schedule in candidates:
             if schedule in frame.tried:
                 continue
             frame.tried.add(schedule)
-            r = self._settle(self._replay(schedule, run_ticks))
+            r = self._replay(schedule)
             if r.death_tick > frame.death_tick:
                 frame.pool.append((r.death_tick, -frame.evaluated, schedule))
             frame.evaluated += 1
         frame.pool.sort(reverse=True)
 
-    def _settle(self, r: Replay) -> Replay:
-        """Re-runs a replay that was still alive at the end of its run until it dies (or completes)."""
-        while r.death_tick is None:
-            run_ticks = min(r.run_ticks * 2, MAX_RUN_TICKS)
-            if run_ticks == r.run_ticks:
-                raise SearchError(f"alive after {run_ticks} ticks without completing: schedule {r.schedule}")
-            r = self._replay(r.schedule, run_ticks)
-        return r
+    def _replay(self, schedule: tuple[int, ...], run_ticks: int | None = None, count: bool = True) -> Replay:
+        """One attempt: reset from the start, release, run the schedule until death or the level's end.
 
-    def _replay(self, schedule: tuple[int, ...], run_ticks: int, count: bool = True) -> Replay:
-        """One attempt: reset from the start, release, run the schedule. Raises _Solved on success."""
+        Raises _Solved when the replay finishes the level or reaches `target_x` alive, and SearchError
+        when the player is still alive after `max_run_ticks` without finishing (stuck alive).
+        """
         cfg = self.config
         if count and self.attempts >= cfg.max_attempts:
             raise SearchError(f"attempt budget of {cfg.max_attempts} exhausted; best x {self.best_x:.1f}")
+        run_ticks = cfg.max_run_ticks if run_ticks is None else run_ticks
         inputs = [(0, False), *schedule_inputs(schedule, cfg.first_decision_tick, cfg.frame_skip)]
         self.bridge.reset(from_start=True)
-        res = self.bridge.run(run_ticks, inputs, trace=True)
+        res = self.bridge.run(run_ticks, inputs, trace=True, stop=True)
         trace = res.trace
-        death = None
-        for i, t in enumerate(trace):
-            if t[3]:
-                death = i
-                break
+        s = res.state
+        death = len(trace) - 1 if trace and trace[-1][3] else None
         if death is None:
             alive_x = trace[-1][0] if trace else 0.0
         else:
             alive_x = trace[death - 1][0] if death > 0 else 0.0
-        r = Replay(schedule, run_ticks, death, bool(res.state.completed), float(alive_x), res.state, res.hash, trace)
+        r = Replay(schedule, len(trace), death, bool(s.finished), float(alive_x), s, res.hash, trace)
         if count:
             self.attempts += 1
             if alive_x > self.best_x:
@@ -262,10 +261,15 @@ class SearchBot:
                 )
             if self._success(r):
                 raise _Solved(r)
+        if death is None and not r.finished and run_ticks >= cfg.max_run_ticks:
+            raise SearchError(
+                f"alive after {r.ticks} ticks without completing, at x {s.x:.1f} of {self.level_length:.0f} "
+                f"(completed {s.completed}, end_anim {s.end_anim}, locked {s.locked}): schedule {schedule}"
+            )
         return r
 
     def _success(self, r: Replay) -> bool:
-        if r.completed:
+        if r.finished:
             return True
         return self.config.target_x is not None and r.alive_x >= self.config.target_x
 
@@ -298,15 +302,14 @@ class SearchBot:
     # -- finishing ---------------------------------------------------------------------------------
 
     def _finish(self, r: Replay, wall: float) -> Solution:
+        """Builds the Solution. For a finished replay `ticks` is the run length: the run stopped on the
+        tick that reached the end, so no shorter run finishes."""
         cfg = self.config
-        final_hash = None
-        if r.completed:
-            ticks, final = self._trim(r)
-            final_x = final.state.x
-            final_hash = final.hash
+        if r.finished:
+            ticks, final_x, final_hash = r.ticks, r.state.x, r.hash
         else:
             ticks = next(i + 1 for i, t in enumerate(r.trace) if t[0] >= cfg.target_x and not t[3])
-            final_x = r.trace[ticks - 1][0]
+            final_x, final_hash = r.trace[ticks - 1][0], None
         inputs = [(t, d) for t, d in schedule_inputs(r.schedule, cfg.first_decision_tick, cfg.frame_skip) if t < ticks]
         ping = self.bridge.ping()
         return Solution(
@@ -315,33 +318,15 @@ class SearchBot:
             ticks=ticks,
             attempts=self.attempts,
             wall_time_s=round(wall, 3),
-            completed=r.completed,
+            completed=r.finished,
             frame_skip=cfg.frame_skip,
             first_decision_tick=cfg.first_decision_tick,
             level_length=self.level_length,
             final_x=final_x,
             hash=final_hash,
-            search={
-                **cfg.to_dict(),
-                "commits": self.commits,
-                "backtracks": self.backtracks,
-                "trim_attempts": self.trim_attempts,
-            },
+            search={**cfg.to_dict(), "commits": self.commits, "backtracks": self.backtracks},
             progress=[[a, x] for a, x in self.progress],
             bridge=ping.get("bridge"),
             gd=ping.get("gd"),
             created=datetime.now(UTC).isoformat(timespec="seconds"),
         )
-
-    def _trim(self, r: Replay) -> tuple[int, Replay]:
-        """Shortest run length that completes, by bisection. These replays are not counted as attempts."""
-        lo, hi, best = 0, r.run_ticks, r
-        while hi - lo > 1:
-            mid = (lo + hi) // 2
-            probe = self._replay(r.schedule, mid, count=False)
-            self.trim_attempts += 1
-            if probe.completed:
-                hi, best = mid, probe
-            else:
-                lo = mid
-        return hi, best

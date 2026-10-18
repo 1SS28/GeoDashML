@@ -33,6 +33,8 @@ class State:
     dead: bool
     started: bool
     completed: bool
+    end_anim: bool
+    locked: bool
     percent: float
     attempts: int
     practice: bool
@@ -42,6 +44,13 @@ class State:
     @classmethod
     def from_dict(cls, d: dict) -> State:
         return cls(**{k: d[k] for k in cls.__dataclass_fields__})
+
+    @property
+    def finished(self) -> bool:
+        """The player has reached the level's end: the game's completion flag, or the end animation has
+        started. The game sets `completed` only when its real-time end animation finishes, which needs
+        the window frontmost; `end_anim` flips on the physics tick that reaches the end portal."""
+        return self.completed or self.end_anim
 
 
 @dataclass(frozen=True)
@@ -106,9 +115,13 @@ class GDBridge:
         r = self.call("step", hold=hold, n=n, trace=True)
         return State.from_dict(r["state"]), r["trace"]
 
-    def run(self, ticks: int, inputs=(), trace: bool = False) -> RunResult:
-        """Advance `ticks` ticks applying `inputs` = [(tick, down), ...]. Returns the trajectory hash."""
-        r = self.call("run", ticks=ticks, inputs=[[int(t), bool(d)] for t, d in inputs], trace=trace)
+    def run(self, ticks: int, inputs=(), trace: bool = False, stop: bool = False) -> RunResult:
+        """Advance `ticks` ticks applying `inputs` = [(tick, down), ...]. Returns the trajectory hash.
+
+        With `stop`, the run ends after the tick that kills the player or reaches the level's end, so
+        the trace is shorter than `ticks` and `state.tick` says how many ticks ran.
+        """
+        r = self.call("run", ticks=ticks, inputs=[[int(t), bool(d)] for t, d in inputs], trace=trace, stop=stop)
         return RunResult(State.from_dict(r["state"]), r["hash"], r.get("trace"))
 
     def reset(self, from_start: bool = False) -> State:

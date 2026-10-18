@@ -41,7 +41,7 @@ namespace {
 
 constexpr int         kPort          = 41414;
 constexpr float       kTickDt        = 1.0f / 240.0f;
-constexpr char const* kBridgeVersion = "0.1.1";
+constexpr char const* kBridgeVersion = "0.1.2";
 constexpr char const* kGdVersion     = "2.2081";
 constexpr int         kMaxTicks      = 2'000'000;
 
@@ -113,12 +113,20 @@ void acceptClient() {
     log::info("bridge: client attached");
 }
 
+// The accepted socket inherits O_NONBLOCK from the listener on macOS, so a reply larger than the
+// socket buffer gets EAGAIN part-way; wait for the client to drain it instead of dropping the client
+// (a 6 MB trace reply did exactly that, 2026-10-17). Gives up after 30 s without progress.
 bool sendAll(std::string const& s) {
     size_t off = 0;
     while (off < s.size()) {
         ssize_t n = send(g.clientFd, s.data() + off, s.size() - off, 0);
         if (n < 0) {
             if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                pollfd p{g.clientFd, POLLOUT, 0};
+                if (poll(&p, 1, 30000) <= 0) return false;
+                continue;
+            }
             return false;
         }
         off += static_cast<size_t>(n);
@@ -166,11 +174,12 @@ char const* modeName(PlayerObject* p) {
 std::string stateJson(PlayLayer* pl) {
     auto p = pl->m_player1;
     return fmt::format(
-        R"({{"tick":{},"x":{:.6f},"y":{:.6f},"yvel":{:.6f},"rot":{:.4f},"mode":"{}","upside_down":{},"mini":{},"speed":{:.4f},"on_ground":{},"dead":{},"started":{},"completed":{},"percent":{:.4f},"attempts":{},"practice":{},"level_id":{},"level_length":{:.3f}}})",
+        R"({{"tick":{},"x":{:.6f},"y":{:.6f},"yvel":{:.6f},"rot":{:.4f},"mode":"{}","upside_down":{},"mini":{},"speed":{:.4f},"on_ground":{},"dead":{},"started":{},"completed":{},"end_anim":{},"locked":{},"percent":{:.4f},"attempts":{},"practice":{},"level_id":{},"level_length":{:.3f}}})",
         g.tick,
         p->getPositionX(), p->getPositionY(), p->m_yVelocity, p->getRotation(),
         modeName(p), p->m_isUpsideDown, p->m_vehicleSize < 1.0f, p->m_playerSpeed,
-        p->m_isOnGround, p->m_isDead, pl->m_started, pl->m_hasCompletedLevel, pl->getCurrentPercent(),
+        p->m_isOnGround, p->m_isDead, pl->m_started, pl->m_hasCompletedLevel,
+        pl->m_levelEndAnimationStarted, p->m_isLocked, pl->getCurrentPercent(),
         pl->m_attempts, pl->m_isPracticeMode,
         pl->m_level ? static_cast<int>(pl->m_level->m_levelID.value()) : 0,
         pl->m_levelLength);
@@ -318,6 +327,7 @@ std::string handle(std::string const& line) {
         int64_t ticks = getInt(v, "ticks", 0);
         if (ticks < 0 || ticks > kMaxTicks) return err("bad args");
         bool trace = getBool(v, "trace", false);
+        bool stop  = getBool(v, "stop", false);  // end the run after the tick that kills the player or ends the level
         std::vector<std::pair<int64_t, bool>> inputs;
         auto inputsF = v.get("inputs");
         if (inputsF.isOk()) {
@@ -348,6 +358,7 @@ std::string handle(std::string const& line) {
             doTick(pl);
             hash.addTick(pl->m_player1);
             if (trace) { if (t) tr += ','; appendTrace(tr, pl->m_player1); }
+            if (stop && (pl->m_player1->m_isDead || pl->m_hasCompletedLevel || pl->m_levelEndAnimationStarted)) break;
         }
         if (trace) return fmt::format(R"({{"ok":true,"state":{},"hash":"{}","trace":[{}]}})", stateJson(pl), hash.h, tr);
         return fmt::format(R"({{"ok":true,"state":{},"hash":"{}"}})", stateJson(pl), hash.h);

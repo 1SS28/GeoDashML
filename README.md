@@ -103,7 +103,7 @@ The object table (`gdenv.table.ObjectTable`) is built once per level from `bridg
 
 ### Step, reward, episode end
 
-Each `step` queues the action in a fixed-capacity ring buffer (`gdenv.delay.ActionDelayBuffer`), pops every action due within the next `frame_skip` ticks, and sends one `run` command with those inputs at their exact tick offsets. A held button is pressed once and released once, like a human. The per-tick trace that comes back gives the ticks alive: reward is `alive_reward` per tick alive, minus `death_penalty` on death, plus `completion_bonus` on completion. The episode ends on death or completion (`terminated`) or at `max_episode_ticks` (`truncated`). `info` carries `tick`, `x`, `y`, `percent`, the applied `hold` and the per-tick `trace`; `env.last_state` is the full bridge state.
+Each `step` queues the action in a fixed-capacity ring buffer (`gdenv.delay.ActionDelayBuffer`), pops every action due within the next `frame_skip` ticks, and sends one `run` command with those inputs at their exact tick offsets. A held button is pressed once and released once, like a human. The per-tick trace that comes back gives the ticks alive: reward is `alive_reward` per tick alive, minus `death_penalty` on death, plus `completion_bonus` on completion. Completion is `State.finished`: the step whose ticks reach the end portal (the game's own `completed` flag only flips when its real-time end animation finishes, see `docs/bridge-protocol.md`). The episode ends on death or completion (`terminated`) or at `max_episode_ticks` (`truncated`). `info` carries `tick`, `x`, `y`, `percent`, the applied `hold` and the per-tick `trace`; `env.last_state` is the full bridge state.
 
 Every reset releases the button and runs `reset_warmup_ticks` ticks before the first decision. The game swallows a press during the first three ticks after a from-start reset (the first tick after a checkpoint respawn) and a held button never re-triggers, so without the warm-up an agent that holds from its first decision never jumps. Observation and info are deterministic functions of the action sequence; the game's attempt counter is kept out of them.
 
@@ -148,8 +148,8 @@ The bot uses the environment's protocol: one decision every `frame_skip` ticks s
 - It keeps a stack of **commits**. A commit is a schedule known to die at tick D when nothing is added after it: the longest surviving prefix so far.
 - To extend a commit it replays candidate schedules from the start (one bridge `run` per candidate, ~500k ticks/s, so no checkpoints are needed) and commits the one that dies latest; ties go to the one tried first. Candidates differ from the commit inside a window of `windows[0]` ticks before D and come in families, each over the window's decisions latest first: **taps** (press at decision j, release at j + 1, the cube's natural move) are tried first and the best tap is committed at once if it dies at least `tap_margin_ticks` later than D; otherwise **toggles** (flip the button state from decision j onward: hold or release from there, the ship's natural move) are tried too and the best of everything that dies later than D is committed. Toggles after the new death tick are dropped.
 - If nothing in the nearest window dies later than D, the next window is tried, then pairs of toggles within `pair_window_ticks` (a release and a later jump, for example). If nothing helps, the commit is popped and the previous commit's next-best candidate is taken instead (backtracking).
-- A candidate replay runs `horizon_ticks` past the commit's death tick; one still alive at the end is run again with a doubled length until it dies or completes.
-- The first replay whose final state has `completed` ends the search. The exact completion tick is then found by bisection on the run length; those replays are reported as `trim_attempts` and not counted as attempts.
+- A candidate replay uses the bridge's `stop` flag (bridge 0.1.2), so it ends on the tick that kills the player or reaches the level's end; a player still alive after `max_run_ticks` is an error.
+- The first replay that reaches the end (`State.finished`: the game's completion flag or the start of its end animation, see `docs/bridge-protocol.md`) ends the search, and its length is the exact completion tick.
 - **Every replay from the start is one attempt**, the metric in `docs/research.md`. `Solution.progress` records the furthest alive x after each attempt that improved it (the best-percent-versus-attempts curve). The search is deterministic given its configuration.
 
 Plain depth-first search over decisions was rejected because it enumerates every setting of the decisions between the needed fix and the death before it moves the fix one decision earlier, which is exponential in that gap (a ship obstacle that needs a hold starting 15 decisions before the crash would cost tens of thousands of replays); scoring each single change by how much later the cube dies costs about one window of replays per obstacle instead.
@@ -161,7 +161,7 @@ Plain depth-first search over decisions was rejected because it enumerates every
 | `windows` | (120, 240, 480) | search windows in ticks before the death, nearest chunk first |
 | `tap_margin_ticks` | 16 | a tap is committed without trying its window's toggles if it dies at least this much later |
 | `pair_window_ticks` | 240 | window for toggle pairs, tried after all single toggles failed |
-| `horizon_ticks` | 2400 | how far past the commit's death a candidate replay runs |
+| `max_run_ticks` | 60000 | longest replay; only reached by a player stuck alive, which raises `SearchError` |
 | `max_attempts` | 100000 | budget; `SearchError` when exhausted |
 | `target_x` | None | stop once alive at this x (partial search) |
 | `render` | False | rendering off during the search (restored afterwards) |
@@ -175,14 +175,14 @@ Plain depth-first search over decisions was rejected because it enumerates every
 |---|---|
 | `level_id` | official level ID |
 | `inputs` | `[[tick, down], ...]`: bridge ticks counted from a from-start reset, alternating press/release from a press, every tick a decision tick (`3 + 4k`). The format of the bridge's `run` command and of `StartCheckpoint.inputs`. |
-| `ticks` | ticks from the reset to the completion flag: the shortest run that completes. `inputs` all lie before it. |
+| `ticks` | ticks from the reset to the level's end (`State.finished`): the shortest run that finishes. `inputs` all lie before it. |
 | `attempts` | replays from the start until the clear was observed |
 | `wall_time_s` | search wall time |
 | `completed` | True for a full clear; False for a `target_x` partial search (then `ticks` is the tick that first reached the target) |
 | `frame_skip`, `first_decision_tick` | the decision protocol the schedule was built for |
 | `level_length`, `final_x` | level units; `final_x` is the player's x when the flag appeared |
 | `hash` | the bridge's trajectory hash of the `ticks`-tick replay, for a one-line determinism check |
-| `search` | the `SearchConfig` plus `commits`, `backtracks`, `trim_attempts` |
+| `search` | the `SearchConfig` plus `commits` and `backtracks` |
 | `progress` | `[[attempt, best_x], ...]` |
 | `bridge`, `gd`, `created` | versions and an ISO timestamp |
 

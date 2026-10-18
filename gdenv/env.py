@@ -168,7 +168,7 @@ class GDEnv(gym.Env):
         if s.dead:
             reward -= cfg.death_penalty
             terminated, outcome = True, "death"
-        elif s.completed:
+        elif s.finished:  # the end portal was reached this step (see State.finished): the game's own flag lags in real time
             reward += cfg.completion_bonus
             terminated, outcome = True, "complete"
         truncated = bool(cfg.max_episode_ticks and self._tick >= cfg.max_episode_ticks and not terminated)

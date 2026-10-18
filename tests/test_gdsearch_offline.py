@@ -47,7 +47,8 @@ class ToyBridge:
         return State(
             tick=self._tick, x=float(self._x), y=0.0, yvel=0.0, rot=0.0, mode="cube", upside_down=False,
             mini=False, speed=0.9, on_ground=self._tick >= self._air_until, dead=self._dead, started=True,
-            completed=self._completed, percent=100.0 * min(self._x, self.length) / self.length,
+            completed=self._completed, end_anim=self._completed, locked=self._completed,
+            percent=100.0 * min(self._x, self.length) / self.length,
             attempts=self.attempt, practice=False, level_id=self.level_id, level_length=float(self.length),
         )
 
@@ -75,7 +76,7 @@ class ToyBridge:
         self._restart()
         return self._state()
 
-    def run(self, ticks, inputs=(), trace=False):
+    def run(self, ticks, inputs=(), trace=False, stop=False):
         self.runs += 1
         inputs = sorted((int(t), bool(d)) for t, d in inputs)
         nxt, tr = 0, []
@@ -97,11 +98,13 @@ class ToyBridge:
                         self._completed = True
             tr.append([float(self._x), 1.0 if t < self._air_until else 0.0, 0.0, int(self._dead)])
             self._tick += 1
+            if stop and (self._dead or self._completed):
+                break
         return RunResult(self._state(), str(hash(tuple(tuple(e) for e in tr))), tr if trace else None)
 
 
 def toy_config(**overrides):
-    base = dict(level_id=1, windows=(60, 120, 240), pair_window_ticks=120, horizon_ticks=200)
+    base = dict(level_id=1, windows=(60, 120, 240), pair_window_ticks=120, max_run_ticks=400)
     base.update(overrides)
     return SearchConfig(**base)
 
@@ -119,6 +122,9 @@ def test_toy_hold_forever_dies_at_the_ceiling():
     toy = ToyBridge()
     r = toy.run(100, [(3, True)], trace=True)
     assert [t[3] for t in r.trace].index(1) == 80
+    toy.reset()
+    r = toy.run(100, [(3, True)], trace=True, stop=True)
+    assert len(r.trace) == 81 and r.trace[-1][3] == 1 and r.state.tick == 81, "stop ends the run after the killing tick"
 
 
 # -- the search --------------------------------------------------------------------------------------
@@ -128,7 +134,7 @@ def test_search_clears_the_toy_level():
     bot = SearchBot(toy, toy_config())
     sol = bot.solve()
     assert sol.completed and sol.ticks == 300 and sol.final_x == 300.0
-    assert sol.attempts == bot.attempts and sol.attempts + bot.trim_attempts == toy.resets
+    assert sol.attempts == bot.attempts == toy.resets, "every replay is one reset and one attempt"
     assert sol.attempts < 300, sol.attempts
     assert bot.commits >= 2, "a tap over the first spike, a tap over the triple, then the tap that completes"
     assert [d for _, d in sol.inputs] == [i % 2 == 0 for i in range(len(sol.inputs))]
@@ -165,6 +171,12 @@ def test_target_x_stops_early():
 def test_attempt_budget_raises():
     with pytest.raises(SearchError, match="budget"):
         SearchBot(ToyBridge(), toy_config(max_attempts=5)).solve()
+
+
+def test_alive_forever_is_an_error():
+    toy = ToyBridge(floor=(), ceiling=(), length=10_000)  # nothing to die on, end far beyond the run cap
+    with pytest.raises(SearchError, match="alive after 400 ticks"):
+        SearchBot(toy, toy_config()).solve()
 
 
 def test_impossible_level_exhausts_the_search():

@@ -28,7 +28,7 @@ def solution():
 def solution_trace(bridge, stereo_madness, solution):
     """Per-tick [x, y, yvel, dead] of the solution replayed from the start, as the bridge reports it."""
     r = solution.replay(bridge)
-    assert r.state.completed, "the saved solution no longer completes the level"
+    assert r.state.finished, "the saved solution no longer completes the level"
     return r.trace
 
 
@@ -68,12 +68,13 @@ def ticks_trace(infos):
 def test_solution_replays_to_completion_in_bridge(bridge, stereo_madness, solution):
     assert solution.completed and solution.level_id == 1
     r = solution.replay(bridge)
-    assert r.state.completed and not r.state.dead
+    assert r.state.finished and not r.state.dead
+    assert r.state.end_anim and r.state.locked, "the end portal starts the end animation and locks the player"
     assert r.hash == solution.hash, "the trajectory changed: the game or the schedule is not what it was"
     assert all(t[3] == 0 for t in r.trace), "never dead on the way"
     assert len(r.trace) == solution.ticks
     shorter = solution.replay(bridge, ticks=solution.ticks - 1)
-    assert not shorter.state.completed, "ticks is the exact tick at which the completion flag appears"
+    assert not shorter.state.finished, "ticks is the exact tick at which the end is reached"
 
 
 def test_solution_completes_through_env(make_env, solution, tmp_path):
@@ -82,7 +83,7 @@ def test_solution_completes_through_env(make_env, solution, tmp_path):
     rewards, infos, term, trunc = drive(env, solution.action_at, solution.n_decisions + 50)
     assert term and not trunc
     s = env.last_state
-    assert s.completed and not s.dead
+    assert s.finished and not s.dead
     trace = ticks_trace(infos)
     assert all(t[3] == 0 for t in trace)
     assert np.isclose(sum(rewards), len(trace) + env.config.completion_bonus)
@@ -97,7 +98,7 @@ def test_solution_completes_through_env(make_env, solution, tmp_path):
     assert df["start_checkpoint"].iloc[0] == "start"
     # The env recovers from a completion: the next episode starts at the level start.
     env.reset()
-    assert not env.last_state.completed and not env.last_state.dead and env.last_state.x < 10
+    assert not env.last_state.finished and not env.last_state.dead and env.last_state.x < 10
     _, _, term, _ = drive(env, lambda k: 0, 200)
     assert term and env.last_state.dead, "a release-only episode after the completion still dies at the first spike"
 
@@ -125,7 +126,7 @@ def test_checkpoint_start_and_suffix_complete(make_env, solution, solution_trace
     env = make_env(start_checkpoint=cp)
     rewards, infos, term, trunc = drive(env, suffix_policy(solution, cp), suffix_decisions(solution, cp) + 50)
     s = env.last_state
-    assert term and s.completed and not s.dead and s.practice
+    assert term and s.finished and not s.dead and s.practice
     assert rewards[-1] >= env.config.completion_bonus
     # The checkpoint episode retraces the solution: env tick e is solution tick cp.tick + 1 + e.
     trace = ticks_trace(infos)
@@ -137,4 +138,4 @@ def test_checkpoint_start_and_suffix_complete(make_env, solution, solution_trace
     assert not mism, f"{len(mism)} ticks differ, first: {mism[0]}"
     # A second episode from the same checkpoint behaves the same.
     again = drive(env, suffix_policy(solution, cp), suffix_decisions(solution, cp) + 50)
-    assert again[2] and env.last_state.completed and ticks_trace(again[1]) == trace
+    assert again[2] and env.last_state.finished and ticks_trace(again[1]) == trace
