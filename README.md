@@ -141,6 +141,14 @@ sol.action_at(k)                    # GDEnv action for decision k (frame_skip 4,
 
 Needs the game running with the bridge and nothing else attached. Stereo Madness: cleared in 3,956 attempts (96 commits, no backtracking, 164 inputs, 20,338 ticks to the end portal), deterministic across runs; see the 2026-10-17 notebook entry.
 
+### Watching the solution in the game
+
+```bash
+uv run python -m gdsearch --level 1 --install-only   # copies data/solutions/1.json to ~/Library/Application Support/GeoDashML/solutions/
+```
+
+Then, in Stereo Madness with nothing attached to the bridge, press **A**: the mod resets the level and plays the solution itself at 240 ticks per second with the exact tick timing the search found (`play` in `docs/bridge-protocol.md` does the same from a script). A again stops it. `--install` on a search run installs the new solution straight away.
+
 ### How it searches
 
 The bot uses the environment's protocol: one decision every `frame_skip` ticks starting at bridge tick 3 (the game swallows presses on ticks 0 to 2), each decision hold or release. A schedule is the list of decisions at which the button state toggles, starting released, so a cube tap is two toggles and a ship climb is two toggles.

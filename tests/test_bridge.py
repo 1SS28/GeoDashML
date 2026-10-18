@@ -7,7 +7,7 @@ X_PER_TICK_1X = 311.58 * TICK_DT  # 1.29825 units: cube speed at 1x per 240 Hz t
 
 def test_ping(bridge):
     r = bridge.ping()
-    assert r["bridge"] == "0.1.3"
+    assert r["bridge"] == "0.1.4"
     assert r["gd"] == "2.2081"
 
 

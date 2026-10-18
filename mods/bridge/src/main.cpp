@@ -12,9 +12,14 @@
 //     by the GJBaseGameLayer::update hook. The bridge advances physics itself by calling
 //     update(1/240) once per tick. Death does not auto-reset while attached.
 //   * Everything runs on the game's main thread; there are no extra threads.
+//   * Playback: with no client attached, pressing A in a level resets it from the start and the
+//     mod replays ~/Library/Application Support/GeoDashML/solutions/<level_id>.json (written by
+//     gdsearch) in lockstep at 240 ticks per second of real time, so the game plays itself with
+//     the schedule's exact tick timing. A again stops it.
 
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CCDisplayLinkDirector.hpp>
+#include <Geode/modify/CCKeyboardDispatcher.hpp>
 #include <Geode/modify/FMODAudioEngine.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
@@ -42,7 +47,7 @@ namespace {
 
 constexpr int         kPort          = 41414;
 constexpr float       kTickDt        = 1.0f / 240.0f;
-constexpr char const* kBridgeVersion = "0.1.3";
+constexpr char const* kBridgeVersion = "0.1.4";
 constexpr char const* kGdVersion     = "2.2081";
 constexpr int         kMaxTicks      = 2'000'000;
 
@@ -57,6 +62,19 @@ struct Bridge {
     bool attached() const { return clientFd >= 0; }
 };
 Bridge g;
+
+// Solution playback (the A key).
+struct Playback {
+    bool                                   active = false;
+    std::vector<std::pair<int64_t, bool>>  inputs;
+    size_t                                 next   = 0;
+    int64_t                                ticks  = 0;  // ticks to play
+    int64_t                                tick   = 0;  // ticks played
+    double                                 carry  = 0;  // fractional ticks owed
+    std::chrono::steady_clock::time_point  last;
+};
+Playback play;
+void startPlayback(PlayLayer* pl);
 
 using Clock = std::chrono::steady_clock;
 
@@ -176,13 +194,13 @@ char const* modeName(PlayerObject* p) {
 std::string stateJson(PlayLayer* pl) {
     auto p = pl->m_player1;
     return fmt::format(
-        R"({{"tick":{},"x":{:.6f},"y":{:.6f},"yvel":{:.6f},"rot":{:.4f},"mode":"{}","upside_down":{},"mini":{},"speed":{:.4f},"on_ground":{},"dead":{},"started":{},"completed":{},"end_anim":{},"locked":{},"percent":{:.4f},"attempts":{},"practice":{},"level_id":{},"level_length":{:.3f}}})",
+        R"({{"tick":{},"x":{:.6f},"y":{:.6f},"yvel":{:.6f},"rot":{:.4f},"mode":"{}","upside_down":{},"mini":{},"speed":{:.4f},"on_ground":{},"dead":{},"started":{},"completed":{},"end_anim":{},"locked":{},"percent":{:.4f},"attempts":{},"practice":{},"playing":{},"level_id":{},"level_length":{:.3f}}})",
         g.tick,
         p->getPositionX(), p->getPositionY(), p->m_yVelocity, p->getRotation(),
         modeName(p), p->m_isUpsideDown, p->m_vehicleSize < 1.0f, p->m_playerSpeed,
         p->m_isOnGround, p->m_isDead, pl->m_started, pl->m_hasCompletedLevel,
         pl->m_levelEndAnimationStarted, p->m_isLocked, pl->getCurrentPercent(),
-        pl->m_attempts, pl->m_isPracticeMode,
+        pl->m_attempts, pl->m_isPracticeMode, play.active,
         pl->m_level ? static_cast<int>(pl->m_level->m_levelID.value()) : 0,
         pl->m_levelLength);
 }
@@ -385,7 +403,93 @@ std::string handle(std::string const& line) {
     if (cmd == "geometry") {
         return cmdGeometry(pl);
     }
+    if (cmd == "play") {
+        // Same as pressing A: starts playback of solutions/<level_id>.json. It runs once the client
+        // detaches (playback and lockstep are exclusive), so a client sends play, then detach.
+        startPlayback(pl);
+        if (!play.active) return err("no solution");
+        return fmt::format(R"({{"ok":true,"inputs":{},"ticks":{}}})", play.inputs.size() - 1, play.ticks);
+    }
     return err("unknown cmd");
+}
+
+// ---------------------------------------------------------------- solution playback
+
+std::filesystem::path gdmlDir() {
+    char const* home = getenv("HOME");
+    return std::filesystem::path(home ? home : "") / "Library/Application Support/GeoDashML";
+}
+
+void stopPlayback(char const* why) {
+    if (!play.active) return;
+    play.active = false;
+    log::info("bridge: playback stopped ({}) after {} ticks", why, play.tick);
+}
+
+// Loads solutions/<level_id>.json (gdsearch's format: "inputs": [[tick, down], ...], "ticks": n),
+// resets the level from the start and begins playing it.
+void startPlayback(PlayLayer* pl) {
+    int levelId = pl->m_level ? static_cast<int>(pl->m_level->m_levelID.value()) : 0;
+    auto path = gdmlDir() / "solutions" / fmt::format("{}.json", levelId);
+    std::ifstream f(path);
+    if (!f) {
+        Notification::create(fmt::format("GDML: no solution for level {}", levelId), NotificationIcon::Error)->show();
+        log::warn("bridge: no solution file at {}", path.string());
+        return;
+    }
+    std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    auto parsed = matjson::parse(text);
+    if (!parsed.isOk()) { log::warn("bridge: bad solution json at {}", path.string()); return; }
+    auto const& v = parsed.unwrap();
+    play.inputs.clear();
+    play.inputs.emplace_back(0, false);  // start released, like the search and the env
+    auto inputsF = v.get("inputs");
+    if (inputsF.isOk()) {
+        auto const& arr = inputsF.unwrap();
+        for (size_t i = 0;; i++) {
+            auto item = arr.get(i);
+            if (!item.isOk()) break;
+            auto t = item.unwrap().get(0), d = item.unwrap().get(1);
+            if (!t.isOk() || !d.isOk()) break;
+            auto ti = t.unwrap().asInt(); auto db = d.unwrap().asBool();
+            if (ti.isOk() && db.isOk()) play.inputs.emplace_back(static_cast<int64_t>(ti.unwrap()), db.unwrap());
+        }
+    }
+    play.ticks  = getInt(v, "ticks", 0) + 240;  // a second past the end so the end portal is reached
+    play.next   = 0;
+    play.tick   = 0;
+    play.carry  = 0;
+    play.last   = Clock::now();
+    play.active = true;
+    pl->resetLevelFromStart();
+    g.tick = 0;
+    int attempts = static_cast<int>(getInt(v, "attempts", 0));
+    Notification::create(fmt::format("GDML: playing solution ({} inputs, found in {} attempts)", play.inputs.size() - 1, attempts))->show();
+    log::info("bridge: playback started from {} ({} inputs, {} ticks)", path.string(), play.inputs.size() - 1, play.ticks);
+}
+
+// Called every frame: advances the physics by the real time elapsed, 240 ticks per second.
+void servicePlayback() {
+    if (!play.active || g.attached()) return;
+    auto pl = PlayLayer::get();
+    if (!pl || !pl->m_player1) { stopPlayback("left the level"); return; }
+    auto now = Clock::now();
+    play.carry += std::chrono::duration<double>(now - play.last).count() * 240.0;
+    play.last = now;
+    int64_t due = static_cast<int64_t>(play.carry);
+    if (due > 24) due = 24;  // after a stall, do not spiral
+    play.carry -= static_cast<double>(due);
+    for (int64_t i = 0; i < due && play.active; i++) {
+        while (play.next < play.inputs.size() && play.inputs[play.next].first <= play.tick) {
+            applyHold(pl, play.inputs[play.next].second);
+            play.next++;
+        }
+        doTick(pl);
+        play.tick++;
+        if (pl->m_player1->m_isDead) stopPlayback("died");
+        else if (pl->m_levelEndAnimationStarted || pl->m_hasCompletedLevel) stopPlayback("reached the end");
+        else if (play.tick >= play.ticks) stopPlayback("schedule exhausted");
+    }
 }
 
 // Services the attached client until the frame budget runs out.
@@ -417,13 +521,32 @@ class $modify(BridgeDirector, CCDisplayLinkDirector) {
     void mainLoop() {
         CCDisplayLinkDirector::mainLoop();
         service();
+        servicePlayback();
+    }
+};
+
+// A starts or stops solution playback while in a level with no client attached. The key is
+// swallowed so the game's own binding (platformer left) does not see it.
+class $modify(BridgeKeys, CCKeyboardDispatcher) {
+    bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat, double timestamp) {
+        if (key == enumKeyCodes::KEY_A && !g.attached()) {
+            auto pl = PlayLayer::get();
+            if (pl && pl->m_player1) {
+                if (down && !repeat) {
+                    if (play.active) stopPlayback("key");
+                    else startPlayback(pl);
+                }
+                return true;
+            }
+        }
+        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat, timestamp);
     }
 };
 
 class $modify(BridgeGameLayer, GJBaseGameLayer) {
     void update(float dt) {
-        // While attached, the game's own frame update is swallowed; only bridge-driven ticks pass.
-        if (g.attached() && !g.stepping) return;
+        // While attached or playing back, the game's own frame update is swallowed; only bridge-driven ticks pass.
+        if ((g.attached() || play.active) && !g.stepping) return;
         GJBaseGameLayer::update(dt);
     }
 };
@@ -431,6 +554,7 @@ class $modify(BridgeGameLayer, GJBaseGameLayer) {
 class $modify(BridgePlayLayer, PlayLayer) {
     void delayedResetLevel() {
         if (g.attached()) return;  // resets happen only on command while attached
+        stopPlayback("reset");
         PlayLayer::delayedResetLevel();
     }
     void setupHasCompleted() {

@@ -32,7 +32,13 @@ def main() -> int:
     ap.add_argument("--render", choices=("on", "off"), default="off")
     ap.add_argument("--log-every", type=int, default=100)
     ap.add_argument("--no-save", action="store_true")
+    ap.add_argument("--install", action="store_true", help="also copy the solution where the game mod reads it (A key)")
+    ap.add_argument("--install-only", action="store_true", help="install the saved solution for --level without searching")
     args = ap.parse_args()
+    if args.install_only:
+        path = Solution.load(Path(args.out) if args.out else args.level).install()
+        print(f"installed {path}; press A in the level to play it")
+        return 0
 
     cfg = SearchConfig(
         level_id=args.level,
@@ -73,6 +79,8 @@ def main() -> int:
         if not args.no_save:
             path = sol.save(out)
             print(f"saved {path}")
+            if args.install:
+                print(f"installed {sol.install()}; press A in the level to play it")
         if sol.completed:
             r = sol.replay(bridge)
             ok = r.state.finished and r.hash == sol.hash

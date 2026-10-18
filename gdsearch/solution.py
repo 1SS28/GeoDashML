@@ -18,6 +18,8 @@ from pathlib import Path
 from gdbridge.client import GDBridge, RunResult
 
 DEFAULT_ROOT = Path("data/solutions")
+INSTALL_ROOT = Path.home() / "Library/Application Support/GeoDashML/solutions"
+"""Where the bridge mod looks for a level's solution when A is pressed in the game."""
 
 
 def schedule_inputs(toggles, first_decision_tick: int, frame_skip: int) -> list[tuple[int, bool]]:
@@ -139,6 +141,10 @@ class Solution:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.to_dict(), indent=1) + "\n")
         return path
+
+    def install(self, root: str | Path = INSTALL_ROOT) -> Path:
+        """Copies the solution where the bridge mod reads it: pressing A in the level then plays it."""
+        return self.save(Path(root) / f"{self.level_id}.json")
 
     @classmethod
     def load(cls, path: str | Path | int) -> Solution:

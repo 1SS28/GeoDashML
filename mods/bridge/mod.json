@@ -3,7 +3,7 @@
     "gd": {
         "mac": "2.2081"
     },
-    "version": "v0.1.0",
+    "version": "v0.1.4",
     "id": "sanjey.gdml_bridge",
     "name": "GDML Bridge",
     "developer": "sanjey",

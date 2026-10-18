@@ -41,12 +41,13 @@ Returned by `state`, `step`, `run`, `reset`.
 | `percent` | float | progress as the game computes it |
 | `attempts` | int | the game's attempt counter for this level session |
 | `practice` | bool | practice mode on |
+| `playing` | bool | the mod is playing a solution back (see below) |
 | `level_id` | int | |
 | `level_length` | float | level length in units |
 
 ## Commands
 
-`ping` → `{"ok":true,"bridge":"0.1.3","gd":"2.2081","in_level":bool}`
+`ping` → `{"ok":true,"bridge":"0.1.4","gd":"2.2081","in_level":bool}`
 
 `state` → `{"ok":true,"state":{...}}`. Fails with `no level` outside a level.
 
@@ -70,7 +71,13 @@ While a client is attached the game places no practice checkpoints of its own (s
 
 `load_main {"id": int}` → loads an official level by ID (1 = Stereo Madness) and replaces the running scene. Returns `{"ok":true}` immediately; the level is ready when `state` succeeds with `started` true and `tick` 0, about 1 s later. The Python client's `load_main` does this wait.
 
+`play` → loads `~/Library/Application Support/GeoDashML/solutions/<level_id>.json` (gdsearch's solution format: `inputs` and `ticks`), resets the level from the start and arms playback. Fails with `no solution`. Playback only runs while no client is attached, so send `detach` next.
+
 `detach` → closes the connection; the game resumes running on its own.
+
+## Solution playback (the A key)
+
+With no client attached, pressing A in a level does what `play` does: the mod swallows the game's own updates and advances the physics itself, 240 ticks per second of real time (at most 24 per frame after a stall), applying the solution's inputs at their exact ticks, so the game plays the search bot's run with the timing the bot found. A again stops it; dying, reaching the end portal, or leaving the level stops it too, and the game then runs on its own again (the end animation and `completed` follow as in normal play). The A key is swallowed while in a level, so the platformer left binding does not see it. `uv run python -m gdsearch --level 1 --install-only` copies a saved solution where the mod reads it.
 
 ## Errors
 
