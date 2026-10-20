@@ -182,6 +182,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
     stage_t0 = t0
     stage_first_episode = episodes + 1
     eval_due = False
+    step_time, step_count = 0.0, 0
     update_rates: list[float] = []
     best_rate = 0.0
     reloads = 0
@@ -248,9 +249,13 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
         nonlocal episodes, decisions
         o, _ = env.reset()
         episodes += 1
+        nonlocal step_time, step_count
         while True:
             a, _, _ = policy.act(o, None)
+            ts = time.perf_counter()
             o, _, term, trunc, inf = env.step(a)
+            step_time += time.perf_counter() - ts
+            step_count += 1
             decisions += 1
             if term or trunc:
                 break
@@ -316,12 +321,15 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
         obs, _ = env.reset()
         episodes += 1
         ep_return, ep_ticks = 0.0, 0
-        update_t0, update_decisions = time.perf_counter(), decisions
+        step_time, step_count = 0.0, 0
         while decisions < cfg.total_decisions:
             buf.reset()
             while not buf.full:
                 action, logp, value = policy.act(obs, rng)
+                ts = time.perf_counter()
                 next_obs, reward, terminated, truncated, info = env.step(action)
+                step_time += time.perf_counter() - ts
+                step_count += 1
                 decisions += 1
                 ep_return += reward
                 ep_ticks = info["tick"]
@@ -352,12 +360,13 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
             stats = ppo.update(buf, rng)
             updates += 1
             now = time.perf_counter()
-            # every decision counts, greedy evaluation episodes included, or long evaluations look like a slowdown
-            if maybe_reload((decisions - update_decisions) / max(now - update_t0, 1e-9)):
+            # the game's speed is the time inside env.step only: resets (many when episodes are short), PPO updates
+            # and evaluation overhead would otherwise look like a slowdown
+            if maybe_reload(step_count / max(step_time, 1e-9)):
                 obs, _ = env.reset()
                 episodes += 1
                 ep_return, ep_ticks = 0.0, 0
-            update_t0, update_decisions = time.perf_counter(), decisions
+            step_time, step_count = 0.0, 0
             if cfg.advance_mode == "greedy" and updates % cfg.eval_every_updates == 0:
                 eval_due = True
             if cfg.log_every_updates and updates % cfg.log_every_updates == 0:

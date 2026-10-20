@@ -43,8 +43,8 @@ class TrainConfig:
     eval_every_updates: int = 1
     greedy_passes: int = 1
     reload_slowdown: float = 0.0
-    """If > 0: reload the level (bridge `load_main`, window brought to the front first) when the decision rate over
-    the last 3 updates falls below this fraction of the best rate so far. The game gets slower within one level
+    """If > 0: reload the level (bridge `load_main`, window brought to the front first) when the env-step rate (time
+    inside env.step only) over the last 3 updates falls below this fraction of the best rate so far. The game gets slower within one level
     session over tens of thousands of attempts (notebook 2026-10-20). 0 disables."""
     stall_episodes: int = 0
     """If > 0: when a stage has run this many training episodes without passing, a checkpoint halfway back toward
