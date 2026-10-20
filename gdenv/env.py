@@ -103,6 +103,19 @@ class GDEnv(gym.Env):
         self.checkpoint_state = self.bridge.checkpoint()
         self._checkpoint_placed = True
 
+    def reload_level(self) -> None:
+        """Loads the level again (bridge `load_main`), which clears whatever slows the game down over a long level
+        session. The window must be frontmost for the level to start. The checkpoint is placed again at the next reset."""
+        self.bridge.load_main(self.config.level_id)
+        self.bridge.render(self.config.render)
+        self._practice_on = self.bridge.state().practice
+        self._checkpoint_placed = False
+        self._needs_reset = True
+
+    def set_episode_number(self, n: int) -> None:
+        """The next episode is number n + 1 in episodes.csv (for resuming a run)."""
+        self._episode = int(n)
+
     def set_start_checkpoint(self, cp: StartCheckpoint | None) -> None:
         """Changes where episodes start. Takes effect at the next reset."""
         self.config = dataclasses.replace(self.config, start_checkpoint=cp)

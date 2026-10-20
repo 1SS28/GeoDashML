@@ -302,3 +302,88 @@ def test_play_exports_a_solution_the_bridge_replays(trained, tmp_path):
                          out=tmp_path / "sampled.json")
     assert results[-1].outcome == "complete" and not results[-1].greedy and sol2.completed and not sol2.search["greedy"]
     assert all(e.outcome != "complete" for e in results[:-1]), "stops at the first completion"
+
+
+# -- greedy advance mode, resume, reload watchdog -----------------------------------------------------------------
+
+def test_greedy_advance_mode_clears_and_logs_evals(tmp_path):
+    required = make_required(60, seed=1)
+    sol = fake_solution(required)
+    rd = tmp_path / "greedy"
+    env = FakeGDEnv(required, GDEnvConfig(render=False, run_dir=str(rd)))
+    res = train(small_config(rd, advance_mode="greedy", greedy_passes=1, eval_every_updates=1), env=env, solution=sol)
+    env.close()
+    assert res.stopped == "cleared" and res.stages_completed == res.stages_total
+    evals = pd.read_json(rd / "evals.jsonl", lines=True)
+    st = load_stages(rd)
+    adv = st[st["reason"] == "advanced"]
+    # every stage switch follows a completed greedy evaluation from that stage, on the same episode
+    for _, row in adv.iterrows():
+        ev = evals[(evals["label"] == row["label"]) & (evals["outcome"] == "complete")]
+        assert len(ev) and int(ev["episode"].iloc[0]) == int(row["episodes_total"])
+    df = pd.read_csv(rd / "episodes.csv")
+    assert len(df) == res.episodes, "evaluation episodes are resets too and have their CSV rows"
+    assert set(evals["episode"]) <= set(df["episode"])
+
+
+def test_resume_continues_episode_numbers_and_stage(tmp_path):
+    required = make_required(60, seed=1)
+    sol = fake_solution(required)
+    rd = tmp_path / "resume"
+    env = FakeGDEnv(required, GDEnvConfig(render=False, run_dir=str(rd)))
+    first = train(small_config(rd, total_decisions=3000, stop_after_start_clears=0), env=env, solution=sol)
+    env.close()
+    assert first.stopped == "budget"
+    _, meta = ActorCritic.load(rd / "policy.pt")
+    env = FakeGDEnv(required, GDEnvConfig(render=False, run_dir=str(rd)))
+    second = train(small_config(rd, total_decisions=60_000, advance_mode="greedy"), env=env, solution=sol, resume=True)
+    env.close()
+    df = pd.read_csv(rd / "episodes.csv")
+    assert df["episode"].tolist() == list(range(1, len(df) + 1)), "numbering continues across the resume"
+    assert second.stopped == "cleared" and second.episodes == len(df) and second.decisions > first.decisions
+    st = load_stages(rd)
+    resumed = st[st["reason"] == "resumed"]
+    assert len(resumed) == 1 and int(resumed["stage"].iloc[0]) == meta["stage"]
+    assert (rd / "train_config.json").exists() and (rd / "train_config_resume1.json").exists()
+    assert TrainConfig.load(rd / "train_config_resume1.json").advance_mode == "greedy"
+
+
+def test_reload_watchdog_reloads_when_the_game_slows(tmp_path, monkeypatch):
+    import sys
+    import time as _time
+
+    gt = sys.modules["gdrl.train"]  # the package exports the function `train`, which shadows the module name
+
+    required = make_required(60, seed=1)
+    sol = fake_solution(required)
+    rd = tmp_path / "reload"
+    env = FakeGDEnv(required, GDEnvConfig(render=False, run_dir=str(rd)))
+    slow = {"on": False}
+    real_step = env.step
+
+    def step(a):
+        if slow["on"]:
+            _time.sleep(0.0005)
+        return real_step(a)
+
+    env.step = step
+    monkeypatch.setattr(gt, "bring_game_to_front", lambda: None)
+    orig_update = gt.PPO.update
+    calls = {"n": 0}
+
+    def update(self, buf, rng):
+        calls["n"] += 1
+        slow["on"] = 6 <= calls["n"] < 12  # slow down for a while after five fast updates
+        return orig_update(self, buf, rng)
+
+    monkeypatch.setattr(gt.PPO, "update", update)
+    res = train(small_config(rd, total_decisions=256 * 14, stop_after_start_clears=0, reload_slowdown=0.25), env=env, solution=sol)
+    env.close()
+    assert res.reloads >= 1 and env.reloads == res.reloads
+    assert "RELOAD:" in (rd / "train.log").read_text()
+
+
+@pytest.mark.parametrize("bad", [dict(advance_mode="x"), dict(eval_every_updates=0), dict(greedy_passes=0), dict(reload_slowdown=1.0)])
+def test_train_config_rejects_bad_new_values(bad):
+    with pytest.raises(ValueError):
+        TrainConfig(**bad)

@@ -46,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("--run", required=True, help="run root; the seed gets a subdirectory")
     tr.add_argument("--seed", type=int, default=0)
     tr.add_argument("--no-seed-dir", action="store_true", help="write to --run directly")
+    tr.add_argument("--resume", action="store_true", help="continue the run directory from its policy.pt, stage and episode count")
     _add_config_args(tr)
 
     pl = sub.add_parser("play", help="run the trained policy with rendering on and export its run as a solution")
@@ -71,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         run_dir = Path(args.run) if args.no_seed_dir else Path(args.run) / f"seed{args.seed}"
         kwargs = {f.name: getattr(args, f.name) for f in dataclasses.fields(TrainConfig) if f.name not in ("run_dir", "seed")}
         cfg = TrainConfig(run_dir=str(run_dir), seed=args.seed, **kwargs)
-        result = train(cfg)
+        result = train(cfg, resume=args.resume)
         return 0 if result.cleared_from_start else 2
 
     if args.cmd == "play":

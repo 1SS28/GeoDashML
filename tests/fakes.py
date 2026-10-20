@@ -100,6 +100,13 @@ class FakeGDEnv:
             raise ValueError(f"checkpoint {cp} is outside the fake level")
         self.checkpoint_state = self._state(self._start_cell, False, False) if cp is not None else None
 
+    def reload_level(self) -> None:
+        self.reloads = getattr(self, "reloads", 0) + 1
+        self._needs_reset = True
+
+    def set_episode_number(self, n: int) -> None:
+        self._episode = int(n)
+
     def reset(self, *, seed=None, options=None):
         self.resets += 1
         self._attempt += 1

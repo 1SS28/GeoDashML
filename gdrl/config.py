@@ -35,6 +35,17 @@ class TrainConfig:
     advance_threshold: float = 0.8
     """Move to the earlier checkpoint once this fraction of the last `advance_window` episodes completed."""
     advance_window: int = 50
+    advance_mode: str = "sampled"
+    """What the advance rule counts. "sampled": the training episodes themselves (threshold over the last
+    `advance_window`). "greedy": evaluation episodes run with the most likely action at every decision, one at the
+    first episode end after every `eval_every_updates` PPO updates; the stage advances after `greedy_passes`
+    consecutive greedy completions. Evaluation episodes are resets like any other and count as attempts."""
+    eval_every_updates: int = 1
+    greedy_passes: int = 1
+    reload_slowdown: float = 0.0
+    """If > 0: reload the level (bridge `load_main`, window brought to the front first) when the decision rate over
+    the last 3 updates falls below this fraction of the best rate so far. The game gets slower within one level
+    session over tens of thousands of attempts (notebook 2026-10-20). 0 disables."""
     stop_after_start_clears: int = 1
     """Stop once this many episodes from the level start (the last stage) completed. 0: run to the budget."""
 
@@ -76,6 +87,10 @@ class TrainConfig:
             raise ValueError("spacing_ticks must be at least one decision")
         if not 0.0 < self.advance_threshold <= 1.0:
             raise ValueError("advance_threshold must be in (0, 1]")
+        if self.advance_mode not in ("sampled", "greedy"):
+            raise ValueError('advance_mode must be "sampled" or "greedy"')
+        if self.eval_every_updates < 1 or self.greedy_passes < 1 or not 0.0 <= self.reload_slowdown < 1.0:
+            raise ValueError("eval_every_updates >= 1, greedy_passes >= 1, 0 <= reload_slowdown < 1")
         if self.advance_window < 1 or self.stop_after_start_clears < 0:
             raise ValueError("advance_window >= 1 and stop_after_start_clears >= 0")
         if self.n_steps < 1 or self.n_epochs < 1 or not 1 <= self.minibatch_size <= self.n_steps:
