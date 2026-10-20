@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from gdenv.config import StartCheckpoint
+from gdsearch import DEAD_TICKS_AFTER_RESET, Solution, aligned_checkpoint_tick
 
 
 def stage_label(cp: StartCheckpoint | None) -> str:
@@ -51,6 +52,13 @@ class CurriculumDriver:
         return StageStats(self.index, self.label, cp.tick if cp else 0, self.episodes_in_stage, self.completions_in_stage,
                           round(self.completion_rate, 4))
 
+    def insert_current(self, cp: StartCheckpoint | None) -> None:
+        """Makes `cp` the current stage; the stage that was current comes next. Used to split a stalled stage."""
+        self.stages.insert(self.index, cp)
+        self.recent.clear()
+        self.episodes_in_stage = 0
+        self.completions_in_stage = 0
+
     @property
     def current(self) -> StartCheckpoint | None:
         return self.stages[self.index]
@@ -86,3 +94,22 @@ class CurriculumDriver:
         self.episodes_in_stage = 0
         self.completions_in_stage = 0
         return True
+
+
+def midpoint_checkpoint(solution: Solution, later: StartCheckpoint | None, earlier: StartCheckpoint | None) -> StartCheckpoint | None:
+    """A checkpoint between two curriculum start points (`later` is nearer the end), aligned to a decision tick and
+    moved earlier until the solution has the button released there, like gdsearch.backward_schedule. None if no
+    such tick lies strictly between them. `earlier` None is the level start."""
+    hi = later.tick if later is not None else solution.ticks
+    lo = earlier.tick if earlier is not None else DEAD_TICKS_AFTER_RESET
+    t = aligned_checkpoint_tick(solution, (lo + hi) // 2)
+    while t > lo and solution.hold_at(t):
+        t -= solution.frame_skip
+    if not lo < t < hi:
+        return None
+    return StartCheckpoint(tick=t, inputs=solution.prefix(t))
+
+
+def stages_from_ticks(solution: Solution, ticks: list[int | None]) -> list[StartCheckpoint | None]:
+    """Rebuilds a stage list saved as checkpoint ticks (None = the level start), for resuming."""
+    return [None if t is None else StartCheckpoint(tick=int(t), inputs=solution.prefix(int(t))) for t in ticks]

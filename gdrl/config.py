@@ -46,6 +46,11 @@ class TrainConfig:
     """If > 0: reload the level (bridge `load_main`, window brought to the front first) when the decision rate over
     the last 3 updates falls below this fraction of the best rate so far. The game gets slower within one level
     session over tens of thousands of attempts (notebook 2026-10-20). 0 disables."""
+    stall_episodes: int = 0
+    """If > 0: when a stage has run this many training episodes without passing, a checkpoint halfway back toward
+    the previous stage is inserted and trained first (gdrl.curriculum.midpoint_checkpoint). On 2026-10-20 the
+    policy held with probability 1.0 for the 12 decisions after checkpoint 8818, where any press kills at the same
+    tick, so no episode ever differed and nothing could be learned there. 0 disables."""
     stop_after_start_clears: int = 1
     """Stop once this many episodes from the level start (the last stage) completed. 0: run to the budget."""
 
@@ -89,6 +94,8 @@ class TrainConfig:
             raise ValueError("advance_threshold must be in (0, 1]")
         if self.advance_mode not in ("sampled", "greedy"):
             raise ValueError('advance_mode must be "sampled" or "greedy"')
+        if self.stall_episodes < 0:
+            raise ValueError("stall_episodes >= 0")
         if self.eval_every_updates < 1 or self.greedy_passes < 1 or not 0.0 <= self.reload_slowdown < 1.0:
             raise ValueError("eval_every_updates >= 1, greedy_passes >= 1, 0 <= reload_slowdown < 1")
         if self.advance_window < 1 or self.stop_after_start_clears < 0:

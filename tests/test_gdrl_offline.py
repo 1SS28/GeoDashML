@@ -426,3 +426,67 @@ def test_same_tick_streak_is_logged_not_fatal(tmp_path):
     env.close()
     assert res.stopped == "budget", "a same-tick streak is only a warning: a stuck policy looks the same"
     assert (rd / "train.log").read_text().count("SAME-TICK") >= 2
+
+
+# -- stall-triggered midpoint checkpoints -------------------------------------------------------------------------
+
+def test_midpoint_checkpoint_and_stage_rebuild():
+    from gdrl.curriculum import midpoint_checkpoint, stages_from_ticks
+
+    sol = Solution(level_id=1, inputs=((47, True), (71, False), (119, True), (143, False)), ticks=300, attempts=1, wall_time_s=0.0)
+    later, earlier = StartCheckpoint(198, sol.prefix(198)), StartCheckpoint(98, sol.prefix(98))
+    mid = midpoint_checkpoint(sol, later, earlier)
+    assert mid is not None and 98 < mid.tick < 198 and (mid.tick - 2) % 4 == 0 and not sol.hold_at(mid.tick)
+    assert mid.tick == 146, "148 aligns down to 146, after the release at 143"
+    inside = midpoint_checkpoint(sol, StartCheckpoint(158, sol.prefix(158)), StartCheckpoint(98, sol.prefix(98)))
+    assert inside.tick == 118, "128 lies inside the hold 119..142, so it moves back to 118, before the press"
+    assert mid.inputs == sol.prefix(mid.tick)
+    assert midpoint_checkpoint(sol, StartCheckpoint(102), StartCheckpoint(98)) is None, "no decision tick strictly between"
+    assert midpoint_checkpoint(sol, StartCheckpoint(50, sol.prefix(50)), None).tick < 50
+    rebuilt = stages_from_ticks(sol, [198, 146, None])
+    assert [cp.tick if cp else None for cp in rebuilt] == [198, 146, None] and rebuilt[1].inputs == sol.prefix(146)
+    d = CurriculumDriver([later, earlier, None], threshold=1.0, window=1)
+    d.record("complete")
+    assert d.current == earlier
+    d.insert_current(mid)
+    assert d.current == mid and d.stages == [later, mid, earlier, None] and d.episodes_in_stage == 0
+    assert d.record("complete") and d.current == earlier
+
+
+class StuckFakeEnv(FakeGDEnv):
+    """Every episode that starts at `stuck_cell` dies on its first decision, whatever the action."""
+
+    def __init__(self, *a, stuck_cell: int, **kw):
+        self.stuck_cell = stuck_cell
+        super().__init__(*a, **kw)
+
+    def step(self, action):
+        if self._start_cell == self.stuck_cell and self._decisions == 0:
+            action = 1 - int(self.required[self._cell])
+        return super().step(action)
+
+
+def test_stalled_stage_is_split_and_the_split_survives_a_resume(tmp_path):
+    required = make_required(60, seed=1)
+    sol = fake_solution(required)
+    stages = backward_schedule(sol, spacing_ticks=80)
+    stuck = stages[1]
+    rd = tmp_path / "split"
+    env = StuckFakeEnv(required, GDEnvConfig(render=False, run_dir=str(rd)), stuck_cell=(stuck.tick - 2) // 4)
+    cfg = small_config(rd, advance_mode="greedy", stall_episodes=40, total_decisions=20_000, stop_after_start_clears=0)
+    res = train(cfg, env=env, solution=sol)
+    env.close()
+    log_text = (rd / "train.log").read_text()
+    assert "SPLIT:" in log_text and res.stages_total > len(stages) - 1
+    st = load_stages(rd)
+    assert "split" in set(st["reason"])
+    _, meta = ActorCritic.load(rd / "policy.pt")
+    assert len(meta["stage_ticks"]) == res.stages_total + 1 and meta["stage_ticks"][-1] is None
+    ticks = [t for t in meta["stage_ticks"] if t is not None]
+    assert ticks == sorted(ticks, reverse=True), "stages stay ordered from the end back to the start"
+    # resuming rebuilds the same stage list
+    env = StuckFakeEnv(required, GDEnvConfig(render=False, run_dir=str(rd)), stuck_cell=(stuck.tick - 2) // 4)
+    res2 = train(small_config(rd, advance_mode="greedy", stall_episodes=40, total_decisions=res.decisions + 2000, stop_after_start_clears=0),
+                 env=env, solution=sol, resume=True)
+    env.close()
+    assert res2.stages_total >= res.stages_total

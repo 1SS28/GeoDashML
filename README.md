@@ -223,7 +223,7 @@ The offline tests check that the search clears the toy level, is deterministic, 
 ## Reinforcement learning (`gdrl`)
 
 ```bash
-uv run python -m gdrl supervise --run runs/ppo_sm_greedy --seeds 0 1 2 -- --advance-mode greedy --reload-slowdown 0.25   # unattended, the setup of the reported runs
+uv run python -m gdrl supervise --run runs/ppo_sm_greedy --seeds 0 1 2 -- --advance-mode greedy --entropy-coef 0.01 --stall-episodes 5000 --reload-slowdown 0.25   # unattended, the setup of the reported runs
 uv run python -m gdrl train --run runs/ppo_sm --seed 0 --advance-threshold 0.5   # one seed; writes runs/ppo_sm/seed0/
 uv run python -m gdrl train --run runs/ppo_sm --seed 1 --advance-threshold 0.5   # seeds run one after another: one bridge client at a time
 uv run python -m gdrl report --run runs/ppo_sm --baseline 3956
@@ -272,6 +272,7 @@ Every env reset is an attempt, checkpoint resets included; the env's `episodes.c
 | `solution_path`, `spacing_ticks` | `data/solutions/<level_id>.json`, 480 | the curriculum's source and checkpoint spacing |
 | `advance_threshold`, `advance_window` | 0.8, 50 | stage switch rule; the Stereo Madness runs use 0.5 (see the notebook, 2026-10-18) |
 | `advance_mode`, `eval_every_updates`, `greedy_passes` | "sampled", 1, 1 | which episodes the stage rule counts, see above |
+| `stall_episodes` | 0 | when a stage runs this many training episodes without passing, insert a checkpoint halfway back toward the previous stage and train from it first (0: never; the reported runs use 5,000) |
 | `reload_slowdown` | 0 | reload the level when the decision rate over 3 updates falls below this fraction of the best (0: never) |
 | `stop_after_start_clears` | 1 | stop after this many from-start completions (0: budget only) |
 | `total_decisions` | 50,000,000 | env-step budget |

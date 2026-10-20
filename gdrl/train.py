@@ -26,7 +26,7 @@ from gdenv import GDEnv
 from gdsearch import Solution, backward_schedule
 
 from .config import TrainConfig
-from .curriculum import CurriculumDriver, stage_label
+from .curriculum import CurriculumDriver, midpoint_checkpoint, stage_label, stages_from_ticks
 from .policy import ActorCritic
 from .ppo import PPO, RolloutBuffer
 
@@ -111,7 +111,7 @@ def resume_point(run_dir: Path) -> dict:
     # an episode number but no CSV row, so the CSV's last episode number is the floor, not its row count
     episodes = max(int(meta.get("episodes", 0)), int(df["episode"].max()) if len(df) else 0)
     decisions = max(int(meta.get("decisions", 0)), int(df["decisions"].sum()))
-    return {"episodes": episodes, "decisions": decisions, "stage": int(meta["stage"])}
+    return {"episodes": episodes, "decisions": decisions, "stage": int(meta["stage"]), "stage_ticks": meta.get("stage_ticks")}
 
 
 def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None = None, resume: bool = False) -> TrainResult:
@@ -119,7 +119,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
     `bridge` is an already-connected GDBridge to share."""
     run_dir = Path(cfg.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    start = resume_point(run_dir) if resume else {"episodes": 0, "decisions": 0, "stage": 0}
+    start = resume_point(run_dir) if resume else {"episodes": 0, "decisions": 0, "stage": 0, "stage_ticks": None}
     if resume:
         n = 1
         while (run_dir / f"train_config_resume{n}.json").exists():
@@ -133,6 +133,8 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
     if solution is None:
         solution = Solution.load(cfg.solution_path if cfg.solution_path else cfg.level_id)
     stages = backward_schedule(solution, spacing_ticks=cfg.spacing_ticks)
+    if start.get("stage_ticks"):  # a resumed run keeps the stages it inserted
+        stages = stages_from_ticks(solution, start["stage_ticks"])
     if cfg.advance_mode == "greedy":
         driver = CurriculumDriver(stages, threshold=1.0, window=cfg.greedy_passes)
     else:
@@ -146,7 +148,8 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
     if hasattr(env, "expected_checkpoint_x"):
         # x after each checkpoint's tick in a from-start replay of the solution, for the env's placement check
         trace = solution.replay(env.bridge, trace=True).trace or []
-        env.expected_checkpoint_x = {cp.tick: float(trace[cp.tick - 1][0]) for cp in stages if cp is not None and cp.tick <= len(trace)}
+        # every tick, so checkpoints inserted later are checked too
+        env.expected_checkpoint_x = {t + 1: float(trace[t][0]) for t in range(len(trace))}
         if trace:
             log.info("expected checkpoint x from a solution replay: %d checkpoints", len(env.expected_checkpoint_x))
     obs_dim = int(np.prod(env.observation_space.shape))
@@ -170,7 +173,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
     evals_file = (run_dir / "evals.jsonl").open("a")
 
     log.info("run %s seed %d: %d curriculum stages from %s to the level start, solution %d ticks, %d params",
-             run_dir, cfg.seed, len(stages), stage_label(stages[0]), solution.ticks, sum(p.numel() for p in policy.parameters()))
+             run_dir, cfg.seed, len(driver.stages), stage_label(driver.stages[0]), solution.ticks, sum(p.numel() for p in policy.parameters()))
 
     t0 = time.perf_counter()
     episodes, decisions, updates = start["episodes"], start["decisions"], 0
@@ -237,7 +240,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
             env.set_start_checkpoint(driver.current)
             save(f"policy_stage{driver.index - 1}.pt")
             log.info("STAGE %d/%d: %s -> %s after %d episodes (%d total, %d decisions, %.0f s)",
-                     driver.index, len(stages) - 1, was, driver.label, episodes - stage_first_episode + 1,
+                     driver.index, len(driver.stages) - 1, was, driver.label, episodes - stage_first_episode + 1,
                      episodes, decisions, time.perf_counter() - t0)
             stage_t0, stage_first_episode = time.perf_counter(), episodes + 1
 
@@ -281,7 +284,27 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
 
     def save(name: str = "policy.pt") -> None:
         policy.save(run_dir / name, stage=driver.index, stage_label=driver.label, episodes=episodes, decisions=decisions,
-                    seed=cfg.seed, train_config=cfg.to_dict(), level_id=cfg.level_id)
+                    seed=cfg.seed, train_config=cfg.to_dict(), level_id=cfg.level_id,
+                    stage_ticks=[None if cp is None else cp.tick for cp in driver.stages])
+
+    def maybe_split_stage() -> None:
+        """Inserts a midpoint checkpoint when the current stage has stalled (cfg.stall_episodes)."""
+        nonlocal stage_t0, stage_first_episode
+        if not cfg.stall_episodes or driver.index == 0 or episodes - stage_first_episode + 1 < cfg.stall_episodes:
+            return
+        stalled = driver.current
+        mid = midpoint_checkpoint(solution, driver.stages[driver.index - 1], stalled)
+        if mid is None:
+            log.info("STALL at %s after %d episodes, but no checkpoint fits between it and the previous stage",
+                     driver.label, episodes - stage_first_episode + 1)
+            stage_first_episode = episodes + 1  # ask again after another stall_episodes
+            return
+        stage_record(driver.snapshot(), "split")
+        driver.insert_current(mid)
+        env.set_start_checkpoint(mid)
+        log.info("SPLIT: %s stalled after %d episodes; training from %s first (%d stages now)",
+                 stage_label(stalled), episodes - stage_first_episode + 1, driver.label, len(driver.stages) - 1)
+        stage_t0, stage_first_episode = time.perf_counter(), episodes + 1
 
     def _terminate(signum, frame):  # a background job ignores SIGINT; SIGTERM stops the run cleanly instead
         raise KeyboardInterrupt
@@ -318,6 +341,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
                     if cfg.stop_after_start_clears and cleared_from_start >= cfg.stop_after_start_clears:
                         stopped = "cleared"
                         break
+                    maybe_split_stage()
                     obs, _ = env.reset()
                     episodes += 1
                     ep_return, ep_ticks = 0.0, 0
@@ -345,7 +369,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
                 log.info(
                     "upd %4d  dec %9d  ep %6d  stage %2d/%d %-10s  rate %.2f (%d/%d)  "
                     "ret %8.1f  ticks %7.0f  pl %.3f vl %.2f ent %.3f kl %.4f clip %.2f ev %.2f  %5.0f dec/s",
-                    updates, decisions, episodes, driver.index, len(stages) - 1, driver.label, driver.completion_rate,
+                    updates, decisions, episodes, driver.index, len(driver.stages) - 1, driver.label, driver.completion_rate,
                     comp, n, mean_ret, mean_ticks, stats.policy_loss, stats.value_loss, stats.entropy, stats.approx_kl,
                     stats.clip_fraction, stats.explained_variance, decisions / el,
                 )
@@ -370,7 +394,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
     wall = time.perf_counter() - t0
     result = TrainResult(
         run_dir=str(run_dir), seed=cfg.seed, episodes=episodes, decisions=decisions, stages_completed=driver.index,
-        stages_total=len(stages) - 1, cleared_from_start=cleared_from_start, cleared_at_episode=cleared_at_episode,
+        stages_total=len(driver.stages) - 1, cleared_from_start=cleared_from_start, cleared_at_episode=cleared_at_episode,
         wall_time_s=round(wall, 1), stopped=stopped, reloads=reloads,
     )
     (run_dir / "result.json").write_text(json.dumps(asdict(result), indent=2) + "\n")
