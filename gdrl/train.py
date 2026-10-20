@@ -154,6 +154,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
             log.info("expected checkpoint x from a solution replay: %d checkpoints", len(env.expected_checkpoint_x))
     obs_dim = int(np.prod(env.observation_space.shape))
     policy = ActorCritic(obs_dim, int(env.action_space.n), cfg.hidden_sizes)
+    policy.action_floor = cfg.action_floor
     if resume:
         loaded, _ = ActorCritic.load(run_dir / "policy.pt")
         policy.load_state_dict(loaded.state_dict())

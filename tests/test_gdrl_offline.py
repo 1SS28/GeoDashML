@@ -490,3 +490,20 @@ def test_stalled_stage_is_split_and_the_split_survives_a_resume(tmp_path):
                  env=env, solution=sol, resume=True)
     env.close()
     assert res2.stages_total >= res.stages_total
+
+
+def test_action_floor_bounds_sampling_and_keeps_greedy():
+    seed_everything(0, 1)
+    p = ActorCritic(4, 2, (8,))
+    with torch.no_grad():
+        p.actor[-1].bias[:] = torch.tensor([-30.0, 30.0])  # saturated: hold with probability 1 - 1e-26
+    obs = np.zeros(4, np.float32)
+    rng = np.random.default_rng(0)
+    assert sum(p.act(obs, rng)[0] == 0 for _ in range(2000)) == 0
+    p.action_floor = 0.03
+    releases = sum(p.act(obs, rng)[0] == 0 for _ in range(4000))
+    assert 80 < releases < 160, releases  # about 3% of 4000
+    a, logp, _ = p.act(obs, None)
+    assert a == 1, "greedy still takes the most likely action"
+    logp_b, ent, _ = p.evaluate(torch.zeros(2, 4), torch.tensor([0, 1]))
+    assert np.allclose(torch.exp(logp_b).detach().numpy(), [0.03, 0.97], atol=1e-6) and (ent > 0.1).all()

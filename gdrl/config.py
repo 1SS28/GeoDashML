@@ -46,6 +46,10 @@ class TrainConfig:
     """If > 0: reload the level (bridge `load_main`, window brought to the front first) when the env-step rate (time
     inside env.step only) over the last 3 updates falls below this fraction of the best rate so far. The game gets slower within one level
     session over tens of thousands of attempts (notebook 2026-10-20). 0 disables."""
+    action_floor: float = 0.0
+    """Minimum sampling probability of each action (gdrl.policy.ActorCritic.action_floor). Without it the policy can
+    saturate in states it has never been rewarded in: at checkpoint 8818 it held with probability 1 - 2e-5 where any
+    press kills, so no sampled episode ever survived (notebook 2026-10-20). 0 disables."""
     stall_episodes: int = 0
     """If > 0: when a stage has run this many training episodes without passing, a checkpoint halfway back toward
     the previous stage is inserted and trained first (gdrl.curriculum.midpoint_checkpoint). On 2026-10-20 the
@@ -94,6 +98,8 @@ class TrainConfig:
             raise ValueError("advance_threshold must be in (0, 1]")
         if self.advance_mode not in ("sampled", "greedy"):
             raise ValueError('advance_mode must be "sampled" or "greedy"')
+        if not 0.0 <= self.action_floor < 0.5:
+            raise ValueError("0 <= action_floor < 0.5")
         if self.stall_episodes < 0:
             raise ValueError("stall_episodes >= 0")
         if self.eval_every_updates < 1 or self.greedy_passes < 1 or not 0.0 <= self.reload_slowdown < 1.0:

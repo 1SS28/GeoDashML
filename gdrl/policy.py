@@ -27,18 +27,29 @@ class ActorCritic(nn.Module):
     def __init__(self, obs_dim: int, n_actions: int = 2, hidden: tuple[int, ...] = (256, 256)):
         super().__init__()
         self.obs_dim, self.n_actions, self.hidden = int(obs_dim), int(n_actions), tuple(hidden)
+        self.action_floor = 0.0
+        """Sampling uses (1 - n*floor) * softmax + floor, so every action keeps at least this probability; log-probs
+        and entropy are of that mixture, so PPO stays on-policy. Greedy action choice is unaffected."""
         self.actor = mlp(obs_dim, self.hidden, n_actions, out_gain=0.01)
         self.critic = mlp(obs_dim, self.hidden, 1, out_gain=1.0)
 
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.actor(obs), self.critic(obs).squeeze(-1)
 
+    def log_probs(self, logits: torch.Tensor) -> torch.Tensor:
+        """Log-probabilities of the sampling distribution (softmax mixed with the action floor)."""
+        if not self.action_floor:
+            return torch.log_softmax(logits, dim=-1)
+        f = self.action_floor
+        probs = (1.0 - f * self.n_actions) * torch.softmax(logits, dim=-1) + f
+        return torch.log(probs)
+
     @torch.inference_mode()
     def act(self, obs: np.ndarray, rng: np.random.Generator | None) -> tuple[int, float, float]:
         """One observation -> (action, log-prob, value). Samples with `rng`; greedy (argmax) when rng is None."""
         x = torch.from_numpy(np.ascontiguousarray(obs, dtype=np.float32)).unsqueeze(0)
         logits, value = self(x)
-        logp = torch.log_softmax(logits[0], dim=-1)
+        logp = self.log_probs(logits[0])
         if rng is None:
             action = int(torch.argmax(logp))
         else:
@@ -49,7 +60,7 @@ class ActorCritic(nn.Module):
     def evaluate(self, obs: torch.Tensor, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Batch -> (log-prob of `actions`, entropy, value)."""
         logits, value = self(obs)
-        logp_all = torch.log_softmax(logits, dim=-1)
+        logp_all = self.log_probs(logits)
         logp = logp_all.gather(1, actions.long().unsqueeze(1)).squeeze(1)
         entropy = -(torch.exp(logp_all) * logp_all).sum(-1)
         return logp, entropy, value
