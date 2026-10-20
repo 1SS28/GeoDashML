@@ -47,8 +47,21 @@ class TrainResult:
     """Episode number (1-based, counting every reset) of the first completion from the level start."""
     wall_time_s: float
     stopped: str
-    """"cleared", "budget" or "interrupted"."""
+    """"cleared", "budget", "interrupted", "reload_failed" or "degenerate"."""
     reloads: int = 0
+
+
+DEGENERATE_EPISODES = 200
+"""Stop if this many training episodes in a row, in one stage, die on the same tick: the game is ignoring the
+inputs (it did while the screen was locked on 2026-10-20) or the start cannot be survived."""
+
+
+class Degenerate(RuntimeError):
+    """Every recent episode ended identically, whatever the actions."""
+
+
+class ReloadFailed(RuntimeError):
+    """The level reload did not bring the level back; the run stops cleanly so it can be resumed."""
 
 
 def seed_everything(seed: int, threads: int) -> np.random.Generator:
@@ -190,9 +203,17 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
         stages_file.write(json.dumps(rec) + "\n")
         stages_file.flush()
 
-    def on_episode_end(outcome: str, greedy: bool) -> None:
+    same_end: list = []  # (stage, ticks) of the last training deaths, for the degenerate-start guard
+
+    def on_episode_end(outcome: str, greedy: bool, ticks: int = -1) -> None:
         """Clear detection and the advance rule for one finished episode (training or greedy evaluation)."""
-        nonlocal cleared_from_start, cleared_at_episode, stage_t0, stage_first_episode
+        nonlocal cleared_from_start, cleared_at_episode, stage_t0, stage_first_episode, same_end
+        if not greedy:
+            key = (driver.index, ticks) if outcome == "death" else None
+            same_end = (same_end + [key])[-DEGENERATE_EPISODES:] if key is not None and (not same_end or same_end[-1] == key) else ([key] if key else [])
+            if len(same_end) >= DEGENERATE_EPISODES:
+                log.info("DEGENERATE: %d episodes in a row from %s died after exactly %d ticks", len(same_end), driver.label, ticks)
+                raise Degenerate(f"{driver.label}: {len(same_end)} deaths at tick {ticks}")
         if driver.at_level_start and outcome == "complete":
             cleared_from_start += 1
             if cleared_at_episode is None:
@@ -246,10 +267,9 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
             reloads += 1
             update_rates = []
             return True
-        except Exception as e:  # the level does not start without the window in front; keep training slowly
+        except Exception as e:  # the level does not start without the window in front: the env is unusable now
             log.info("RELOAD failed: %s", str(e)[:200])
-            update_rates = []
-            return False
+            raise ReloadFailed(str(e)) from e
 
     def save(name: str = "policy.pt") -> None:
         policy.save(run_dir / name, stage=driver.index, stage_label=driver.label, episodes=episodes, decisions=decisions,
@@ -283,7 +303,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
                 if done:
                     outcome = episode_outcome(env, terminated, truncated)
                     recent.append((ep_return, ep_ticks, outcome, driver.label))
-                    on_episode_end(outcome, greedy=False)
+                    on_episode_end(outcome, greedy=False, ticks=ep_ticks)
                     if eval_due and not (cfg.stop_after_start_clears and cleared_from_start >= cfg.stop_after_start_clears):
                         eval_due = False
                         on_episode_end(run_greedy_episode(), greedy=True)
@@ -327,6 +347,10 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
     except KeyboardInterrupt:
         stopped = "interrupted"
         log.info("interrupted")
+    except ReloadFailed:
+        stopped = "reload_failed"  # the supervisor restarts the game and resumes
+    except Degenerate:
+        stopped = "degenerate"
     finally:
         signal.signal(signal.SIGTERM, previous_handler)
         stage_record(driver.snapshot(), stopped)

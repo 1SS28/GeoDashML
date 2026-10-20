@@ -15,7 +15,7 @@ Every response has `"ok": true` or `"ok": false` with an `"error"` string.
 - One tick is one call of the physics update with `dt = 1/240`. Decisions in the RL environment happen every `frame_skip` ticks; the bridge itself has no notion of frame skip.
 - Input is applied with `GJBaseGameLayer::handleButton` before the ticks of a `step` run, so an input at tick *t* affects tick *t* onward.
 - Death does not auto-reset the level while attached. The client must send `reset`.
-- Music is not started while attached. The game's music start spins on FMOD's stream state and can livelock inside `resetLevel`, and the agent does not need audio. Since 0.1.1 the same goes for the practice song: `togglePracticeMode` plays it through `FMODAudioEngine::playMusic`, which is a no-op while attached (it livelocked the same way).
+- Music is not started while attached. The game's music start spins on FMOD's stream state and can livelock inside `resetLevel`, and the agent does not need audio. Since 0.1.1 the same goes for the practice song: `togglePracticeMode` plays it through `FMODAudioEngine::playMusic`, which is a no-op while attached (it livelocked the same way). Since 0.1.5 `FMODAudioEngine::loadMusic` is a no-op while attached too: loading a level (`load_main`) goes `PlayLayer::setupHasCompleted` → `loadMusic` → `preloadMusic` and livelocked the same way.
 - After a start or reset, the first two ticks do not move the player. From the third tick on, x advances by the speed constant every tick. Deterministic, but remember the offset when indexing traces.
 
 ## State object
@@ -47,7 +47,7 @@ Returned by `state`, `step`, `run`, `reset`.
 
 ## Commands
 
-`ping` → `{"ok":true,"bridge":"0.1.4","gd":"2.2081","in_level":bool}`
+`ping` → `{"ok":true,"bridge":"0.1.5","gd":"2.2081","in_level":bool}`
 
 `state` → `{"ok":true,"state":{...}}`. Fails with `no level` outside a level.
 

@@ -59,6 +59,14 @@ def main(argv: list[str] | None = None) -> int:
     pl.add_argument("--install", action="store_true", help="copy the solution where the bridge mod reads it (A key)")
     pl.add_argument("--out", default=None, help="solution path (default <run>/solution.json)")
 
+    sv = sub.add_parser("supervise", help="train seeds unattended: resume after crashes, restart the game, pause on screen lock")
+    sv.add_argument("--run", required=True)
+    sv.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
+    sv.add_argument("--level", type=int, default=1)
+    sv.add_argument("--max-rss-gb", type=float, default=8.0, help="restart the game when its memory passes this")
+    sv.add_argument("--max-restarts", type=int, default=30)
+    sv.add_argument("train_args", nargs=argparse.REMAINDER, help="after --: arguments for gdrl train")
+
     rp = sub.add_parser("report", help="metrics table over the seeds of a run")
     rp.add_argument("--run", required=True)
     rp.add_argument("--baseline", type=int, default=None, help="search-bot attempts to put in the table (3956 for Stereo Madness)")
@@ -82,6 +90,13 @@ def main(argv: list[str] | None = None) -> int:
                             seed=args.seed, render=args.render, install=args.install, out=args.out)
         print(summary_json(results))
         return 0 if sol is not None and sol.completed else 2
+
+    if args.cmd == "supervise":
+        from .supervise import supervise
+
+        train_args = [a for a in args.train_args if a != "--"]
+        return supervise(args.run, args.seeds, train_args, level_id=args.level, max_rss_gb=args.max_rss_gb,
+                         max_restarts=args.max_restarts)
 
     if args.cmd == "report":
         from .metrics import report

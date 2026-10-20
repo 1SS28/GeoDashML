@@ -390,3 +390,39 @@ def test_reload_watchdog_reloads_when_the_game_slows(tmp_path, monkeypatch):
 def test_train_config_rejects_bad_new_values(bad):
     with pytest.raises(ValueError):
         TrainConfig(**bad)
+
+
+# -- supervisor helpers ----------------------------------------------------------------------------------------------
+
+def test_supervisor_helpers(tmp_path):
+    from gdrl.supervise import parse_console_locked, seed_finished, trainer_command
+
+    assert parse_console_locked('  | "IOConsoleLocked" = Yes\n') and parse_console_locked('"IOConsoleLocked"=true')
+    assert not parse_console_locked('"IOConsoleLocked" = No') and not parse_console_locked("nothing here")
+    rd = tmp_path / "seed1"
+    assert not seed_finished(rd)
+    cmd = trainer_command(str(tmp_path), 1, ["--advance-mode", "greedy"], rd)
+    assert cmd[-2:] == ["--advance-mode", "greedy"] and "--resume" not in cmd
+    rd.mkdir()
+    (rd / "policy.pt").write_bytes(b"x")
+    assert trainer_command(str(tmp_path), 1, [], rd)[-1] == "--resume"
+    for stopped, done in [("interrupted", False), ("reload_failed", False), ("budget", True), ("cleared", True)]:
+        (rd / "result.json").write_text(json.dumps({"stopped": stopped}))
+        assert seed_finished(rd) is done
+
+
+def test_degenerate_guard_stops_when_every_episode_dies_alike(tmp_path):
+    required = make_required(60, seed=1)
+    sol = fake_solution(required)
+    rd = tmp_path / "degenerate"
+    env = FakeGDEnv(required, GDEnvConfig(render=False, run_dir=str(rd)))
+    real_step = env.step
+
+    def step(a):  # inputs ignored: the wrong action at every decision, so every episode dies in its first cell
+        return real_step(1 - int(env.required[env._cell]))
+
+    env.step = step
+    res = train(small_config(rd, total_decisions=100_000), env=env, solution=sol)
+    env.close()
+    assert res.stopped == "degenerate" and res.episodes <= 200 + 1
+    assert "DEGENERATE" in (rd / "train.log").read_text()

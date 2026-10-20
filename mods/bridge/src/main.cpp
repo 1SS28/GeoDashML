@@ -47,7 +47,7 @@ namespace {
 
 constexpr int         kPort          = 41414;
 constexpr float       kTickDt        = 1.0f / 240.0f;
-constexpr char const* kBridgeVersion = "0.1.4";
+constexpr char const* kBridgeVersion = "0.1.5";
 constexpr char const* kGdVersion     = "2.2081";
 constexpr int         kMaxTicks      = 2'000'000;
 
@@ -591,11 +591,21 @@ class $modify(BridgePlayer, PlayerObject) {
 
 // Entering practice mode plays the practice song through FMODAudioEngine::playMusic, which goes
 // loadMusic -> preloadMusic -> the same Sound::getOpenState spin, and livelocked the game in
-// Phase 2 (see the notebook, 2026-10-16). No music of any kind while attached.
+// Phase 2 (see the notebook, 2026-10-16). Loading a level while attached goes
+// PlayLayer::setupHasCompleted -> loadMusic -> preloadMusic and livelocked the same way on
+// 2026-10-20 (bridge 0.1.5). No music of any kind while attached: loadMusic is the common step.
 class $modify(BridgeAudio, FMODAudioEngine) {
     void playMusic(gd::string path, bool shouldLoop, float fadeInTime, int channel) {
         if (g.attached()) return;
         FMODAudioEngine::playMusic(path, shouldLoop, fadeInTime, channel);
+    }
+    void loadMusic(gd::string path, float speed, float unknown, float volume, bool shouldLoop, int musicID, int channelID, bool dontReset) {
+        if (g.attached()) return;
+        FMODAudioEngine::loadMusic(path, speed, unknown, volume, shouldLoop, musicID, channelID, dontReset);
+    }
+    void loadMusic(gd::string path) {
+        if (g.attached()) return;
+        FMODAudioEngine::loadMusic(path);
     }
 };
 
