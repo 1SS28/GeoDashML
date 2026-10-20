@@ -339,8 +339,11 @@ def test_resume_continues_episode_numbers_and_stage(tmp_path):
     second = train(small_config(rd, total_decisions=60_000, advance_mode="greedy"), env=env, solution=sol, resume=True)
     env.close()
     df = pd.read_csv(rd / "episodes.csv")
-    assert df["episode"].tolist() == list(range(1, len(df) + 1)), "numbering continues across the resume"
-    assert second.stopped == "cleared" and second.episodes == len(df) and second.decisions > first.decisions
+    ep = df["episode"].tolist()
+    assert ep == sorted(set(ep)), "numbering continues across the resume, never reused"
+    # the episode running at the budget stop was a reset (an attempt) with no CSV row: at most one gap
+    assert len(df) in (second.episodes, second.episodes - 1) and ep[-1] == second.episodes
+    assert second.stopped == "cleared" and second.decisions > first.decisions
     st = load_stages(rd)
     resumed = st[st["reason"] == "resumed"]
     assert len(resumed) == 1 and int(resumed["stage"].iloc[0]) == meta["stage"]

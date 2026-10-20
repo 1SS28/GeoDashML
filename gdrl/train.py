@@ -92,7 +92,11 @@ def resume_point(run_dir: Path) -> dict:
 
     df = pd.read_csv(run_dir / "episodes.csv")
     _, meta = ActorCritic.load(run_dir / "policy.pt")
-    return {"episodes": int(len(df)), "decisions": int(df["decisions"].sum()), "stage": int(meta["stage"])}
+    # policy.pt carries the exact counts when it was saved at the stop; an episode abandoned by a level reload has
+    # an episode number but no CSV row, so the CSV's last episode number is the floor, not its row count
+    episodes = max(int(meta.get("episodes", 0)), int(df["episode"].max()) if len(df) else 0)
+    decisions = max(int(meta.get("decisions", 0)), int(df["decisions"].sum()))
+    return {"episodes": episodes, "decisions": decisions, "stage": int(meta["stage"])}
 
 
 def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None = None, resume: bool = False) -> TrainResult:
@@ -261,7 +265,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
         obs, _ = env.reset()
         episodes += 1
         ep_return, ep_ticks = 0.0, 0
-        update_t0 = time.perf_counter()
+        update_t0, update_decisions = time.perf_counter(), decisions
         while decisions < cfg.total_decisions:
             buf.reset()
             while not buf.full:
@@ -296,11 +300,12 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
             stats = ppo.update(buf, rng)
             updates += 1
             now = time.perf_counter()
-            if maybe_reload(cfg.n_steps / max(now - update_t0, 1e-9)):
+            # every decision counts, greedy evaluation episodes included, or long evaluations look like a slowdown
+            if maybe_reload((decisions - update_decisions) / max(now - update_t0, 1e-9)):
                 obs, _ = env.reset()
                 episodes += 1
                 ep_return, ep_ticks = 0.0, 0
-            update_t0 = time.perf_counter()
+            update_t0, update_decisions = time.perf_counter(), decisions
             if cfg.advance_mode == "greedy" and updates % cfg.eval_every_updates == 0:
                 eval_due = True
             if cfg.log_every_updates and updates % cfg.log_every_updates == 0:
