@@ -52,8 +52,10 @@ class TrainResult:
 
 
 DEGENERATE_EPISODES = 200
-"""Stop if this many training episodes in a row, in one stage, die on the same tick: the game is ignoring the
-inputs (it did while the screen was locked on 2026-10-20) or the start cannot be survived."""
+"""Warn when this many training episodes in a row, in one stage, die on the same tick. It is a warning, not a
+stop: the game ignoring inputs (as with the locked screen on 2026-10-20) looks like this, but so does a policy
+that has not yet found a needed press and keeps dying at the same obstacle (stage 8, 2026-10-20). The locked
+screen itself is caught by the supervisor."""
 
 
 class Degenerate(RuntimeError):
@@ -212,8 +214,8 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
             key = (driver.index, ticks) if outcome == "death" else None
             same_end = (same_end + [key])[-DEGENERATE_EPISODES:] if key is not None and (not same_end or same_end[-1] == key) else ([key] if key else [])
             if len(same_end) >= DEGENERATE_EPISODES:
-                log.info("DEGENERATE: %d episodes in a row from %s died after exactly %d ticks", len(same_end), driver.label, ticks)
-                raise Degenerate(f"{driver.label}: {len(same_end)} deaths at tick {ticks}")
+                log.info("SAME-TICK: %d episodes in a row from %s died after exactly %d ticks", len(same_end), driver.label, ticks)
+                same_end = []
         if driver.at_level_start and outcome == "complete":
             cleared_from_start += 1
             if cleared_at_episode is None:

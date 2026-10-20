@@ -411,7 +411,7 @@ def test_supervisor_helpers(tmp_path):
         assert seed_finished(rd) is done
 
 
-def test_degenerate_guard_stops_when_every_episode_dies_alike(tmp_path):
+def test_same_tick_streak_is_logged_not_fatal(tmp_path):
     required = make_required(60, seed=1)
     sol = fake_solution(required)
     rd = tmp_path / "degenerate"
@@ -422,7 +422,7 @@ def test_degenerate_guard_stops_when_every_episode_dies_alike(tmp_path):
         return real_step(1 - int(env.required[env._cell]))
 
     env.step = step
-    res = train(small_config(rd, total_decisions=100_000), env=env, solution=sol)
+    res = train(small_config(rd, total_decisions=5_000), env=env, solution=sol)
     env.close()
-    assert res.stopped == "degenerate" and res.episodes <= 200 + 1
-    assert "DEGENERATE" in (rd / "train.log").read_text()
+    assert res.stopped == "budget", "a same-tick streak is only a warning: a stuck policy looks the same"
+    assert (rd / "train.log").read_text().count("SAME-TICK") >= 2

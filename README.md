@@ -246,7 +246,7 @@ Two rules decide when a stage is passed (`advance_mode`). `sampled` counts the t
 
 ### Unattended runs
 
-`python -m gdrl supervise` runs the seeds one after another and keeps the game usable underneath them. It stops the trainer when the screen locks (the game ignores inputs then) and resumes after the unlock. It restarts the game through Steam and resumes the seed when the trainer exits without finishing or the game's memory passes `--max-rss-gb` (the game leaks about 0.4 MB per death). It holds `caffeinate -d -i` while it runs, so the display stays on and the screen does not lock. The trainer also stops by itself when 200 deaths in a row land on the same tick (`degenerate`), and with `reload_slowdown` set it reloads the level when the game slows down within a long level session.
+`python -m gdrl supervise` runs the seeds one after another and keeps the game usable underneath them. It stops the trainer when the screen locks (the game ignores inputs then) and resumes after the unlock. It restarts the game through Steam and resumes the seed when the trainer exits without finishing or the game's memory passes `--max-rss-gb` (the game leaks about 0.4 MB per death). It holds `caffeinate -d -i` while it runs, so the display stays on and the screen does not lock. The trainer logs a `SAME-TICK` warning when 200 deaths in a row land on the same tick, and with `reload_slowdown` set it reloads the level when the game slows down within a long level session.
 
 ### Attempts and curves
 

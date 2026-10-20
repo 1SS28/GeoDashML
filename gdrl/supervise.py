@@ -11,9 +11,8 @@ The arguments after `--` go to `python -m gdrl train`. For each seed the supervi
   when the screen is unlocked;
 - the game's memory passes `--max-rss-gb` (it leaks about 0.4 MB per death): the trainer is stopped, the
   game restarted, and the seed resumed;
-- the trainer exits without clearing (crash, failed level reload, bridge error, or 200 deaths in a row on
-  the same tick): the game is restarted and the seed resumed, up to `--max-restarts` times per seed; a
-  second same-tick stop in a row ends the seed, since then the checkpoint itself is unsurvivable.
+- the trainer exits without clearing (crash, failed level reload, bridge error): the game is restarted
+  and the seed resumed, up to `--max-restarts` times per seed.
 
 A seed is done when its result.json says "cleared" or "budget". The supervisor holds a keep-awake
 assertion that keeps the display on (`caffeinate -d -i`), so the screen does not lock on display sleep.
