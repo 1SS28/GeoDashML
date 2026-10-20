@@ -47,7 +47,7 @@ namespace {
 
 constexpr int         kPort          = 41414;
 constexpr float       kTickDt        = 1.0f / 240.0f;
-constexpr char const* kBridgeVersion = "0.1.5";
+constexpr char const* kBridgeVersion = "0.1.6";
 constexpr char const* kGdVersion     = "2.2081";
 constexpr int         kMaxTicks      = 2'000'000;
 
@@ -560,6 +560,22 @@ class $modify(BridgePlayLayer, PlayLayer) {
     void setupHasCompleted() {
         PlayLayer::setupHasCompleted();
         g.tick = 0;
+    }
+    // Reaching the end portal starts an end animation that moves the player toward the portal with
+    // cocos actions, driven by the scheduler in real time, which runs while the window is frontmost.
+    // Under the bridge the next reset and checkpoint placement happen while it still runs, so it
+    // dragged the player away from respawns and freshly placed checkpoints (x off by a few units, by
+    // hundreds, or to 3.4 million; 2026-10-20), and its completion callback showed the game's level
+    // complete screen. While a client is attached only the state changes are kept: the flag the
+    // bridge reports as end_anim and the player lock.
+    void playEndAnimationToPos(cocos2d::CCPoint position) {
+        if (!g.attached()) {
+            PlayLayer::playEndAnimationToPos(position);
+            return;
+        }
+        m_levelEndAnimationStarted = true;
+        if (m_player1) m_player1->m_isLocked = true;
+        if (m_player2) m_player2->m_isLocked = true;
     }
     // Practice mode places its own checkpoints every couple of seconds of play; after a long episode
     // resetLevel() then respawns at the game's checkpoint, not the client's (2026-10-17). While a

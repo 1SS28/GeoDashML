@@ -36,7 +36,7 @@ Returned by `state`, `step`, `run`, `reset`.
 | `dead` | bool | |
 | `started` | bool | the game has begun the level; false for about 1 s of real time after a load, during which ticks do nothing |
 | `completed` | bool | the game's own completion flag (`m_hasCompletedLevel`). It is set when the real-time end animation finishes, which only runs while the window is frontmost; in lockstep rely on `end_anim` |
-| `end_anim` | bool | the end animation has started (`m_levelEndAnimationStarted`): set on the physics tick that reaches the end portal. The Python client's `State.finished` is `completed or end_anim` |
+| `end_anim` | bool | the end animation has started (`m_levelEndAnimationStarted`): set on the physics tick that reaches the end portal. The Python client's `State.finished` is `completed or end_anim`. Since 0.1.6 the animation itself does not run while a client is attached (it moved the player during later resets when the window was frontmost); the flag and the player lock are still set |
 | `locked` | bool | the player is locked (`m_isLocked`), as it is from the end portal on |
 | `percent` | float | progress as the game computes it |
 | `attempts` | int | the game's attempt counter for this level session |
@@ -47,7 +47,7 @@ Returned by `state`, `step`, `run`, `reset`.
 
 ## Commands
 
-`ping` → `{"ok":true,"bridge":"0.1.5","gd":"2.2081","in_level":bool}`
+`ping` → `{"ok":true,"bridge":"0.1.6","gd":"2.2081","in_level":bool}`
 
 `state` → `{"ok":true,"state":{...}}`. Fails with `no level` outside a level.
 
