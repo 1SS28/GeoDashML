@@ -223,6 +223,7 @@ The offline tests check that the search clears the toy level, is deterministic, 
 ## Reinforcement learning (`gdrl`)
 
 ```bash
+uv run python -m gdrl supervise --run runs/ppo_sm_greedy --seeds 0 1 2 -- --advance-mode greedy --reload-slowdown 0.25   # unattended, the setup of the reported runs
 uv run python -m gdrl train --run runs/ppo_sm --seed 0 --advance-threshold 0.5   # one seed; writes runs/ppo_sm/seed0/
 uv run python -m gdrl train --run runs/ppo_sm --seed 1 --advance-threshold 0.5   # seeds run one after another: one bridge client at a time
 uv run python -m gdrl report --run runs/ppo_sm --baseline 3956
@@ -240,6 +241,12 @@ PPO is written in PyTorch in `gdrl/ppo.py` (clipped surrogate, GAE, one environm
 ### Curriculum
 
 `gdsearch.backward_schedule(Solution.load(level_id), spacing_ticks)` gives the start points, from `spacing_ticks` before the end back to the level start (`None`, outside practice mode). `gdrl.CurriculumDriver` holds the current stage; after every episode it looks at the last `advance_window` outcomes and, once at least `advance_threshold` of them completed (defaults 50 and 0.8), moves to the earlier checkpoint. The trainer applies it with `env.set_start_checkpoint(cp)` (the env places the practice checkpoint itself at the next reset) and logs every switch to `train.log` and `stages.jsonl`. Training stops after `stop_after_start_clears` completions from the level start (default 1), or at the `total_decisions` budget.
+
+Two rules decide when a stage is passed (`advance_mode`). `sampled` counts the training episodes themselves: at least `advance_threshold` of the last `advance_window` completed. `greedy` runs one evaluation episode with the most likely action at every decision after every `eval_every_updates` updates and advances after `greedy_passes` completions in a row; evaluations are logged to `evals.jsonl` and count as attempts. The sampled rule stalls once the suffix is long: one random wrong press anywhere ends the episode (notebook, 2026-10-18 to 2026-10-20), so the reported runs use `greedy`. `--resume` continues a run directory from its `policy.pt`, stage and episode count.
+
+### Unattended runs
+
+`python -m gdrl supervise` runs the seeds one after another and keeps the game usable underneath them. It stops the trainer when the screen locks (the game ignores inputs then) and resumes after the unlock. It restarts the game through Steam and resumes the seed when the trainer exits without finishing or the game's memory passes `--max-rss-gb` (the game leaks about 0.4 MB per death). It holds `caffeinate -d -i` while it runs, so the display stays on and the screen does not lock. The trainer also stops by itself when 200 deaths in a row land on the same tick (`degenerate`), and with `reload_slowdown` set it reloads the level when the game slows down within a long level session.
 
 ### Attempts and curves
 
@@ -264,6 +271,8 @@ Every env reset is an attempt, checkpoint resets included; the env's `episodes.c
 | `level_id`, `frame_skip`, `action_delay_ticks`, `render`, `max_episode_ticks` | 1, 4, 0, False, 30000 | passed to `GDEnvConfig` |
 | `solution_path`, `spacing_ticks` | `data/solutions/<level_id>.json`, 480 | the curriculum's source and checkpoint spacing |
 | `advance_threshold`, `advance_window` | 0.8, 50 | stage switch rule; the Stereo Madness runs use 0.5 (see the notebook, 2026-10-18) |
+| `advance_mode`, `eval_every_updates`, `greedy_passes` | "sampled", 1, 1 | which episodes the stage rule counts, see above |
+| `reload_slowdown` | 0 | reload the level when the decision rate over 3 updates falls below this fraction of the best (0: never) |
 | `stop_after_start_clears` | 1 | stop after this many from-start completions (0: budget only) |
 | `total_decisions` | 50,000,000 | env-step budget |
 | `n_steps`, `n_epochs`, `minibatch_size` | 2048, 4, 256 | rollout length and update schedule |
