@@ -68,7 +68,10 @@ class GDEnv(gym.Env):
         self._episode = 0
         self._episode_t0 = 0.0
         self._needs_reset = True
-        self.stats = {"steps": 0, "episodes": 0, "steps_with_truncated_objects": 0, "checkpoint_replaced": 0}
+        self.stats = {"steps": 0, "episodes": 0, "steps_with_truncated_objects": 0, "checkpoint_replaced": 0,
+                      "checkpoint_misplaced": 0}
+        self.expected_checkpoint_x: dict[int, float] = {}
+        """Checkpoint tick -> the player's x after that many ticks of the schedule, if known (checked on placement)."""
 
         self._logger: EpisodeLogger | None = None
         if cfg.run_dir:
@@ -90,18 +93,29 @@ class GDEnv(gym.Env):
             if self._practice_on != on:
                 raise BridgeError(f"practice mode did not switch to {on}")
 
-    def _place_checkpoint(self, cp: StartCheckpoint) -> None:
-        """Reset from the start, replay the checkpoint schedule, place the practice checkpoint."""
-        self._set_practice(True)
-        self.bridge.reset(from_start=True)
-        self.bridge.hold(False)
-        if cp.tick > 0:
-            s = self.bridge.run(cp.tick, cp.inputs).state
-            if s.dead:
-                raise BridgeError(f"start checkpoint schedule dies before tick {cp.tick} (x={s.x:.1f})")
+    def _place_checkpoint(self, cp: StartCheckpoint, tries: int = 3) -> None:
+        """Reset from the start, replay the checkpoint schedule, place the practice checkpoint.
+
+        If `expected_checkpoint_x` knows the checkpoint's tick, the placed position is checked against it and
+        placement is retried; on 2026-10-20 a run trained for 15 minutes from a checkpoint at 96% of the level
+        instead of 75.5%, cause unknown."""
+        for attempt in range(tries):
+            self._set_practice(True)
+            self.bridge.reset(from_start=True)
             self.bridge.hold(False)
-        self.checkpoint_state = self.bridge.checkpoint()
-        self._checkpoint_placed = True
+            if cp.tick > 0:
+                s = self.bridge.run(cp.tick, cp.inputs).state
+                if s.dead:
+                    raise BridgeError(f"start checkpoint schedule dies before tick {cp.tick} (x={s.x:.1f})")
+                self.bridge.hold(False)
+            self.checkpoint_state = self.bridge.checkpoint()
+            want = self.expected_checkpoint_x.get(cp.tick)
+            got = self.checkpoint_state.x
+            if want is None or abs(got - want) <= 0.5:
+                self._checkpoint_placed = True
+                return
+            self.stats["checkpoint_misplaced"] += 1
+        raise BridgeError(f"checkpoint {cp.label} placed at x {got:.1f}, expected {want:.1f}, {tries} times")
 
     def reload_level(self) -> None:
         """Loads the level again (bridge `load_main`), which clears whatever slows the game down over a long level

@@ -28,3 +28,27 @@ def test_short_training_and_play_against_the_game(bridge, stereo_madness, tmp_pa
     s = bridge.state()
     assert not s.practice, "play runs from the level start outside practice mode"
     assert all(t < sol.ticks for t, _ in sol.inputs)
+
+
+def test_checkpoint_placement_is_checked_against_the_solution(bridge, stereo_madness):
+    from gdbridge.client import BridgeError
+    from gdenv import GDEnv, GDEnvConfig
+    from gdsearch import backward_schedule
+
+    if not SOLUTION_PATH.exists():
+        pytest.skip(f"{SOLUTION_PATH} missing")
+    sol = Solution.load(SOLUTION_PATH)
+    cp = backward_schedule(sol, spacing_ticks=480)[9]
+    env = GDEnv(GDEnvConfig(start_checkpoint=cp, render=False), bridge=bridge)
+    try:
+        trace = sol.replay(bridge, trace=True).trace
+        env.expected_checkpoint_x = {cp.tick: trace[cp.tick - 1][0]}
+        env.reset()
+        assert abs(env.checkpoint_state.x - trace[cp.tick - 1][0]) < 0.01 and env.stats["checkpoint_misplaced"] == 0
+        env.expected_checkpoint_x[cp.tick] += 100.0
+        env.set_start_checkpoint(cp)
+        with pytest.raises(BridgeError, match="expected"):
+            env.reset()
+        assert env.stats["checkpoint_misplaced"] == 3
+    finally:
+        env.close()

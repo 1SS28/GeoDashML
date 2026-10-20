@@ -143,6 +143,12 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
         env = GDEnv(cfg.env_config(start_checkpoint=driver.current), bridge=bridge)
     else:
         env.set_start_checkpoint(driver.current)
+    if hasattr(env, "expected_checkpoint_x"):
+        # x after each checkpoint's tick in a from-start replay of the solution, for the env's placement check
+        trace = solution.replay(env.bridge, trace=True).trace or []
+        env.expected_checkpoint_x = {cp.tick: float(trace[cp.tick - 1][0]) for cp in stages if cp is not None and cp.tick <= len(trace)}
+        if trace:
+            log.info("expected checkpoint x from a solution replay: %d checkpoints", len(env.expected_checkpoint_x))
     obs_dim = int(np.prod(env.observation_space.shape))
     policy = ActorCritic(obs_dim, int(env.action_space.n), cfg.hidden_sizes)
     if resume:
