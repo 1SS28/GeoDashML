@@ -51,8 +51,9 @@ class TrainConfig:
     saturate in states it has never been rewarded in: at checkpoint 8818 it held with probability 1 - 2e-5 where any
     press kills, so no sampled episode ever survived (notebook 2026-10-20). 0 disables."""
     stall_episodes: int = 0
-    """If > 0: when a stage has run this many training episodes without passing, a checkpoint halfway back toward
-    the previous stage is inserted and trained first (gdrl.curriculum.midpoint_checkpoint). On 2026-10-20 the
+    """If > 0: when a stage has run this many training episodes without passing, and at least 90% of them died
+    before reaching the previous stage's start, a checkpoint halfway back toward the previous stage is inserted and
+    trained first (gdrl.curriculum.midpoint_checkpoint). On 2026-10-20 the
     policy held with probability 1.0 for the 12 decisions after checkpoint 8818, where any press kills at the same
     tick, so no episode ever differed and nothing could be learned there. 0 disables."""
     stop_after_start_clears: int = 1

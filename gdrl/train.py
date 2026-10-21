@@ -217,11 +217,13 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
         stages_file.flush()
 
     same_end: list = []  # (stage, ticks) of the last training deaths, for the degenerate-start guard
+    stage_ticks_seen: list[int] = []  # ticks of the current stage's training episodes, for the stall rule
 
     def on_episode_end(outcome: str, greedy: bool, ticks: int = -1) -> None:
         """Clear detection and the advance rule for one finished episode (training or greedy evaluation)."""
         nonlocal cleared_from_start, cleared_at_episode, stage_t0, stage_first_episode, same_end
         if not greedy:
+            stage_ticks_seen.append(ticks if outcome == "death" else 10**9)
             key = (driver.index, ticks) if outcome == "death" else None
             same_end = (same_end + [key])[-DEGENERATE_EPISODES:] if key is not None and (not same_end or same_end[-1] == key) else ([key] if key else [])
             if len(same_end) >= DEGENERATE_EPISODES:
@@ -245,6 +247,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
                      driver.index, len(driver.stages) - 1, was, driver.label, episodes - stage_first_episode + 1,
                      episodes, decisions, time.perf_counter() - t0)
             stage_t0, stage_first_episode = time.perf_counter(), episodes + 1
+            stage_ticks_seen.clear()
 
     def run_greedy_episode() -> str:
         nonlocal episodes, decisions
@@ -294,11 +297,19 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
                     stage_ticks=[None if cp is None else cp.tick for cp in driver.stages])
 
     def maybe_split_stage() -> None:
-        """Inserts a midpoint checkpoint when the current stage has stalled (cfg.stall_episodes)."""
-        nonlocal stage_t0, stage_first_episode
+        """Inserts a midpoint checkpoint when the current stage has stalled in its new segment: `stall_episodes`
+        training episodes without passing, at least 90% of them dying before the previous stage's start. Deaths
+        further on are the long suffix, which more training fixes and a split does not."""
+        nonlocal stage_t0, stage_first_episode, stage_ticks_seen
         if not cfg.stall_episodes or driver.index == 0 or episodes - stage_first_episode + 1 < cfg.stall_episodes:
             return
         stalled = driver.current
+        prev = driver.stages[driver.index - 1]
+        segment = (prev.tick if prev is not None else solution.ticks) - (stalled.tick if stalled is not None else 0)
+        recent = stage_ticks_seen[-cfg.stall_episodes:]
+        in_segment = sum(t <= segment for t in recent) / max(len(recent), 1)
+        if in_segment < 0.9:
+            return
         mid = midpoint_checkpoint(solution, driver.stages[driver.index - 1], stalled)
         if mid is None:
             log.info("STALL at %s after %d episodes, but no checkpoint fits between it and the previous stage",
@@ -306,6 +317,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
             stage_first_episode = episodes + 1  # ask again after another stall_episodes
             return
         stage_record(driver.snapshot(), "split")
+        stage_ticks_seen = []
         driver.insert_current(mid)
         env.set_start_checkpoint(mid)
         log.info("SPLIT: %s stalled after %d episodes; training from %s first (%d stages now)",
