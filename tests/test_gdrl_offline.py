@@ -507,3 +507,21 @@ def test_action_floor_bounds_sampling_and_keeps_greedy():
     assert a == 1, "greedy still takes the most likely action"
     logp_b, ent, _ = p.evaluate(torch.zeros(2, 4), torch.tensor([0, 1]))
     assert np.allclose(torch.exp(logp_b).detach().numpy(), [0.03, 0.97], atol=1e-6) and (ent > 0.1).all()
+
+
+def test_action_floor_per_sample_matches_scalar():
+    seed_everything(0, 1)
+    p = ActorCritic(4, 2, (8,))
+    x = torch.randn(3, 4)
+    a = torch.tensor([0, 1, 0])
+    floors = torch.tensor([0.0, 0.03, 0.1])
+    logp, _, _ = p.evaluate(x, a, floors)
+    for i, f in enumerate([0.0, 0.03, 0.1]):
+        lp1, _, _ = p.evaluate(x[i : i + 1], a[i : i + 1], torch.tensor([f]))
+        p.action_floor = f
+        lp2, _, _ = p.evaluate(x[i : i + 1], a[i : i + 1])
+        p.action_floor = 0.0
+        assert torch.allclose(logp[i], lp1[0]) and torch.allclose(lp1, lp2)
+    buf = RolloutBuffer(2, 4)
+    buf.add(np.zeros(4), 1, -0.1, 1.0, False, 0.0, floor=0.03)
+    assert buf.floors[0] == np.float32(0.03)

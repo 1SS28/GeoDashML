@@ -154,7 +154,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
             log.info("expected checkpoint x from a solution replay: %d checkpoints", len(env.expected_checkpoint_x))
     obs_dim = int(np.prod(env.observation_space.shape))
     policy = ActorCritic(obs_dim, int(env.action_space.n), cfg.hidden_sizes)
-    policy.action_floor = cfg.action_floor
+    policy.action_floor = 0.0  # applied per step below, so that it can be limited to the start of an episode
     if resume:
         loaded, _ = ActorCritic.load(run_dir / "policy.pt")
         policy.load_state_dict(loaded.state_dict())
@@ -333,12 +333,14 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
             stage_record(driver.snapshot(), "resumed")
         obs, _ = env.reset()
         episodes += 1
-        ep_return, ep_ticks = 0.0, 0
+        ep_return, ep_ticks, ep_decisions = 0.0, 0, 0
         step_time, step_count = 0.0, 0
         while decisions < cfg.total_decisions:
             buf.reset()
             while not buf.full:
-                action, logp, value = policy.act(obs, rng)
+                floor = cfg.action_floor if (not cfg.action_floor_decisions or ep_decisions < cfg.action_floor_decisions) else 0.0
+                action, logp, value = policy.act(obs, rng, floor)
+                ep_decisions += 1
                 ts = time.perf_counter()
                 next_obs, reward, terminated, truncated, info = env.step(action)
                 step_time += time.perf_counter() - ts
@@ -350,7 +352,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
                 done = terminated or truncated
                 if truncated and not terminated:
                     r += cfg.gamma * policy.act(next_obs, None)[2]
-                buf.add(obs, action, logp, r, done, value)
+                buf.add(obs, action, logp, r, done, value, floor)
                 obs = next_obs
                 if done:
                     outcome = episode_outcome(env, terminated, truncated)
@@ -365,7 +367,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
                     maybe_split_stage()
                     obs, _ = env.reset()
                     episodes += 1
-                    ep_return, ep_ticks = 0.0, 0
+                    ep_return, ep_ticks, ep_decisions = 0.0, 0, 0
             if stopped == "cleared":
                 break
             last_value = 0.0 if buf.dones[buf.pos - 1] else policy.act(obs, None)[2]
@@ -378,7 +380,7 @@ def train(cfg: TrainConfig, *, bridge=None, env=None, solution: Solution | None 
             if maybe_reload(step_count / max(step_time, 1e-9)):
                 obs, _ = env.reset()
                 episodes += 1
-                ep_return, ep_ticks = 0.0, 0
+                ep_return, ep_ticks, ep_decisions = 0.0, 0, 0
             step_time, step_count = 0.0, 0
             if cfg.advance_mode == "greedy" and updates % cfg.eval_every_updates == 0:
                 eval_due = True

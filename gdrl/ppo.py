@@ -22,6 +22,8 @@ class RolloutBuffer:
         self.rewards = np.zeros(n_steps, dtype=np.float32)
         self.dones = np.zeros(n_steps, dtype=np.float32)
         self.values = np.zeros(n_steps, dtype=np.float32)
+        self.floors = np.zeros(n_steps, dtype=np.float32)
+        """The action floor each step was sampled with (gdrl.policy.ActorCritic.log_probs)."""
         self.advantages = np.zeros(n_steps, dtype=np.float32)
         self.returns = np.zeros(n_steps, dtype=np.float32)
         self.pos = 0
@@ -33,8 +35,9 @@ class RolloutBuffer:
     def full(self) -> bool:
         return self.pos >= self.n_steps
 
-    def add(self, obs, action: int, logprob: float, reward: float, done: bool, value: float) -> None:
+    def add(self, obs, action: int, logprob: float, reward: float, done: bool, value: float, floor: float = 0.0) -> None:
         i = self.pos
+        self.floors[i] = floor
         self.obs[i] = obs
         self.actions[i] = action
         self.logprobs[i] = logprob
@@ -90,6 +93,7 @@ class PPO:
         old_logp = torch.from_numpy(buf.logprobs)
         adv = torch.from_numpy(buf.advantages)
         returns = torch.from_numpy(buf.returns)
+        floors = torch.from_numpy(buf.floors)
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)
 
         pl = vl = ent = kl = clipped = 0.0
@@ -99,7 +103,7 @@ class PPO:
             perm = rng.permutation(n)
             for start in range(0, n, self.minibatch_size):
                 idx = torch.from_numpy(perm[start : start + self.minibatch_size])
-                logp, entropy, value = self.policy.evaluate(obs[idx], actions[idx])
+                logp, entropy, value = self.policy.evaluate(obs[idx], actions[idx], floors[idx])
                 ratio = torch.exp(logp - old_logp[idx])
                 a = adv[idx]
                 policy_loss = -torch.min(ratio * a, torch.clamp(ratio, 1 - self.clip_range, 1 + self.clip_range) * a).mean()

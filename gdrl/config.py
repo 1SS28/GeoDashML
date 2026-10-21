@@ -50,6 +50,10 @@ class TrainConfig:
     """Minimum sampling probability of each action (gdrl.policy.ActorCritic.action_floor). Without it the policy can
     saturate in states it has never been rewarded in: at checkpoint 8818 it held with probability 1 - 2e-5 where any
     press kills, so no sampled episode ever survived (notebook 2026-10-20). 0 disables."""
+    action_floor_decisions: int = 0
+    """If > 0: the action floor applies only to the first this many decisions of each training episode, where the
+    traps right after a checkpoint are; later decisions sample from the policy alone. A floor of 0.03 on every
+    decision killed most sampled episodes in precise cube sections (stage 34, notebook 2026-10-21). 0: every decision."""
     stall_episodes: int = 0
     """If > 0: when a stage has run this many training episodes without passing, and at least 90% of them died
     before reaching the previous stage's start, a checkpoint halfway back toward the previous stage is inserted and
@@ -101,6 +105,8 @@ class TrainConfig:
             raise ValueError('advance_mode must be "sampled" or "greedy"')
         if not 0.0 <= self.action_floor < 0.5:
             raise ValueError("0 <= action_floor < 0.5")
+        if self.action_floor_decisions < 0:
+            raise ValueError("action_floor_decisions >= 0")
         if self.stall_episodes < 0:
             raise ValueError("stall_episodes >= 0")
         if self.eval_every_updates < 1 or self.greedy_passes < 1 or not 0.0 <= self.reload_slowdown < 1.0:

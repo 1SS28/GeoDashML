@@ -36,20 +36,24 @@ class ActorCritic(nn.Module):
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.actor(obs), self.critic(obs).squeeze(-1)
 
-    def log_probs(self, logits: torch.Tensor) -> torch.Tensor:
-        """Log-probabilities of the sampling distribution (softmax mixed with the action floor)."""
-        if not self.action_floor:
+    def log_probs(self, logits: torch.Tensor, floor=None) -> torch.Tensor:
+        """Log-probabilities of the sampling distribution: the softmax mixed with an action floor. `floor` is a float,
+        a tensor broadcastable to the logits' batch (one floor per sample), or None for `self.action_floor`."""
+        f = self.action_floor if floor is None else floor
+        if isinstance(f, float) and not f:
             return torch.log_softmax(logits, dim=-1)
-        f = self.action_floor
+        if isinstance(f, torch.Tensor):
+            f = f.reshape(-1, *([1] * (logits.dim() - 1))) if logits.dim() > 1 else f
         probs = (1.0 - f * self.n_actions) * torch.softmax(logits, dim=-1) + f
         return torch.log(probs)
 
     @torch.inference_mode()
-    def act(self, obs: np.ndarray, rng: np.random.Generator | None) -> tuple[int, float, float]:
-        """One observation -> (action, log-prob, value). Samples with `rng`; greedy (argmax) when rng is None."""
+    def act(self, obs: np.ndarray, rng: np.random.Generator | None, floor: float | None = None) -> tuple[int, float, float]:
+        """One observation -> (action, log-prob, value). Samples with `rng`; greedy (argmax) when rng is None.
+        `floor` overrides `self.action_floor` for this call."""
         x = torch.from_numpy(np.ascontiguousarray(obs, dtype=np.float32)).unsqueeze(0)
         logits, value = self(x)
-        logp = self.log_probs(logits[0])
+        logp = self.log_probs(logits[0], floor)
         if rng is None:
             action = int(torch.argmax(logp))
         else:
@@ -57,10 +61,10 @@ class ActorCritic(nn.Module):
             action = int(rng.random() < probs[1]) if self.n_actions == 2 else int(rng.choice(self.n_actions, p=probs / probs.sum()))
         return action, float(logp[action]), float(value[0])
 
-    def evaluate(self, obs: torch.Tensor, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Batch -> (log-prob of `actions`, entropy, value)."""
+    def evaluate(self, obs: torch.Tensor, actions: torch.Tensor, floors: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Batch -> (log-prob of `actions`, entropy, value). `floors` gives each sample's action floor."""
         logits, value = self(obs)
-        logp_all = self.log_probs(logits)
+        logp_all = self.log_probs(logits, floors)
         logp = logp_all.gather(1, actions.long().unsqueeze(1)).squeeze(1)
         entropy = -(torch.exp(logp_all) * logp_all).sum(-1)
         return logp, entropy, value
